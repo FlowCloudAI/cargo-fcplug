@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use image::GenericImageView;
 use serde::Deserialize;
 use std::fs::{self, File};
 use std::io::Read;
@@ -169,12 +168,7 @@ fn validate_manifest() -> Result<Manifest> {
 fn check_icon() -> Result<Option<PathBuf>> {
     let icon = Path::new("icon.png");
 
-    if !icon.exists() {
-        return Ok(None);
-    }
-
-    let img = image::open(icon)?;
-    let (w, h) = img.dimensions();
+    let (w, h) = read_png_size(icon)?;
 
     if w > 128 || h > 128 {
         return Err(anyhow!("icon.png must be ≤ 128x128"));
@@ -228,6 +222,23 @@ fn package(wasm: &Path, icon: Option<PathBuf>) -> Result<()> {
     println!("dist/plugin.fcplug");
 
     Ok(())
+}
+
+fn read_png_size(path: &Path) -> Result<(u32, u32)> {
+    use std::io::Read;
+
+    let mut f = File::open(path)?;
+    let mut buf = [0u8; 24];
+    f.read_exact(&mut buf)?;
+
+    if &buf[0..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err(anyhow!("not a png"));
+    }
+
+    let w = u32::from_be_bytes(buf[16..20].try_into()?);
+    let h = u32::from_be_bytes(buf[20..24].try_into()?);
+
+    Ok((w, h))
 }
 
 fn run_init(path: Option<String>) -> Result<()> {
