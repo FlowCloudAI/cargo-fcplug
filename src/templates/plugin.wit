@@ -3,6 +3,7 @@ package mapper:plugin;
 interface mapper {
   map-request: func(input: string) -> string;
   map-response: func(input: string) -> string;
+  map-stream-line: func(line: string) -> string;
 }
 
 world api {

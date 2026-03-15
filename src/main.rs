@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use serde::Deserialize;
+use serde_json::Value;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,6 @@ const ABI_VERSION: u32 = 1;
 static DEFAULT_ICON: &[u8] = include_bytes!("../src/templates/icon.png");
 static DEFAULT_README: &[u8] = include_bytes!("../src/templates/README.md");
 static DEFAULT_WIT: &[u8] = include_bytes!("../src/templates/plugin.wit");
-static DEFAULT_TYPES: &[u8] = include_bytes!("../src/templates/types.rs");
 
 #[derive(Parser)]
 #[command(
@@ -50,11 +50,13 @@ struct InitArgs {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 #[serde(rename_all = "kebab-case")]
 struct Manifest {
     id: String,
     name: String,
+    author: String,
+    #[allow(dead_code)]
+    description: String,
     version: String,
     kind: String,
     abi_version: u32,
@@ -92,17 +94,20 @@ fn build_wasm() -> Result<()> {
 }
 
 fn find_wasm() -> Result<PathBuf> {
-    let dir = Path::new("target/wasm32-wasip2/release");
+    // 从 Cargo.toml 读 crate name，替换 '-' 为 '_'
+    let cargo_toml: Value = toml::from_str(&fs::read_to_string("Cargo.toml")?)?;
+    let crate_name = cargo_toml["package"]["name"]
+        .as_str()
+        .ok_or(anyhow!("missing package.name"))?
+        .replace('-', "_");
 
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
+    let expected = Path::new("target/wasm32-wasip2/release").join(format!("{}.wasm", crate_name));
 
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("wasm") {
-            return Ok(path);
-        }
+    if expected.exists() {
+        Ok(expected)
+    } else {
+        Err(anyhow!("expected wasm not found: {}", expected.display()))
     }
-
-    Err(anyhow!("no wasm file found"))
 }
 
 fn optimize_wasm(wasm: &Path) -> Result<()> {
@@ -138,23 +143,26 @@ fn validate_manifest() -> Result<Manifest> {
     if manifest.id.trim().is_empty() {
         return Err(anyhow!("manifest.id cannot be empty"));
     }
-
     if manifest.name.trim().is_empty() {
         return Err(anyhow!("manifest.name cannot be empty"));
     }
-
     if manifest.version.trim().is_empty() {
         return Err(anyhow!("manifest.version cannot be empty"));
     }
 
-    if manifest.kind.trim().is_empty() {
-        return Err(anyhow!("manifest.kind cannot be empty"));
+    if manifest.author.trim().is_empty() {
+        return Err(anyhow!("manifest.author cannot be empty"));
     }
-    if manifest.abi_version != ABI_VERSION {
+
+    if !["kind/llm", "kind/image", "kind/tts"].contains(&manifest.kind.as_str()) {
         return Err(anyhow!(
-            "manifest.abi_version must be {}",
-            ABI_VERSION
+            "manifest.kind must be one of: kind/llm, kind/image, kind/tts (got: {})",
+            manifest.kind
         ));
+    }
+
+    if manifest.abi_version != ABI_VERSION {
+        return Err(anyhow!("manifest.abi_version must be {}", ABI_VERSION));
     }
 
     println!(
@@ -165,8 +173,14 @@ fn validate_manifest() -> Result<Manifest> {
     Ok(manifest)
 }
 
-fn check_icon() -> Result<Option<PathBuf>> {
+fn check_icon() -> Result<PathBuf> {
     let icon = Path::new("icon.png");
+
+    if !icon.exists() {
+        println!("== Generating icon.png ==");
+
+        fs::write(icon, DEFAULT_ICON)?;
+    }
 
     let (w, h) = read_png_size(icon)?;
 
@@ -178,10 +192,10 @@ fn check_icon() -> Result<Option<PathBuf>> {
         return Err(anyhow!("icon must be square"));
     }
 
-    Ok(Some(icon.to_path_buf()))
+    Ok(icon.to_path_buf())
 }
 
-fn package(wasm: &Path, icon: Option<PathBuf>) -> Result<()> {
+fn package(wasm: &Path, icon: PathBuf, plugin_id: &str) -> Result<()> {
     println!("== Preparing dist folder ==");
 
     let dist = Path::new("dist");
@@ -192,14 +206,11 @@ fn package(wasm: &Path, icon: Option<PathBuf>) -> Result<()> {
 
     fs::create_dir_all(dist)?;
 
-    let wasm_dst = dist.join("plugin.wasm");
-    fs::copy(wasm, &wasm_dst)?;
-
-    fs::copy("manifest.json", dist.join("manifest.json"))?;
+    let fcplug_filename = format!("{}.fcplug", plugin_id);
 
     println!("== Packing fcplug ==");
 
-    let fcplug = File::create(dist.join("plugin.fcplug"))?;
+    let fcplug = File::create(dist.join(&fcplug_filename))?;
     let mut zip = ZipWriter::new(fcplug);
 
     let opt = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -208,18 +219,16 @@ fn package(wasm: &Path, icon: Option<PathBuf>) -> Result<()> {
     std::io::copy(&mut File::open("manifest.json")?, &mut zip)?;
 
     zip.start_file("plugin.wasm", opt)?;
-    std::io::copy(&mut File::open(&wasm_dst)?, &mut zip)?;
+    std::io::copy(&mut File::open(wasm)?, &mut zip)?;
 
-    if let Some(icon_path) = icon {
-        zip.start_file("icon.png", opt)?;
-        std::io::copy(&mut File::open(icon_path)?, &mut zip)?;
-    }
+    zip.start_file("icon.png", opt)?;
+    std::io::copy(&mut File::open(icon)?, &mut zip)?;
 
     zip.finish()?;
 
     println!();
     println!("Build complete:");
-    println!("dist/plugin.fcplug");
+    println!("dist/{}", fcplug_filename);
 
     Ok(())
 }
@@ -245,7 +254,15 @@ fn run_init(path: Option<String>) -> Result<()> {
     println!("== Create new FlowCloudAI plugin ==");
 
     let id = ask("Plugin id", "my-plugin")?;
-    let kind = ask("Plugin kind (llm|image|tts)", "llm")?;
+    let mut kind: String;
+    loop {
+        kind = ask("Plugin kind (llm|image|tts)", "llm")?;
+        if kind != "llm" && kind != "image" && kind != "tts" {
+            println!("Invalid plugin kind!");
+        } else {
+            break;
+        }
+    }
     let author = ask("Author", "unknown")?;
     let description = ask("Description", "example plugin")?;
 
@@ -262,10 +279,10 @@ fn run_init(path: Option<String>) -> Result<()> {
     write_manifest(&root, &id, &kind, &author, &description)?;
     write_cargo(&root, &id)?;
     write_lib(&root)?;
-    write_types(&root)?;
     write_wit(&root)?;
     write_icon(&root)?;
     write_readme(&root)?;
+    write_gitignore(&root)?;
 
     println!();
     println!("Plugin scaffold created:");
@@ -275,8 +292,15 @@ fn run_init(path: Option<String>) -> Result<()> {
 }
 
 fn run_build(args: BuildArgs) -> Result<()> {
+    // 0. 检测 Cargo.toml
+    if !Path::new("Cargo.toml").exists() {
+        return Err(anyhow!(
+            "Cargo.toml not found. Run this command from the plugin project root."
+        ));
+    }
+
     // 1. 校验 manifest
-    let _manifest = validate_manifest()?;
+    let manifest = validate_manifest()?;
 
     // 2. 编译 wasm
     if !args.no_build {
@@ -295,7 +319,7 @@ fn run_build(args: BuildArgs) -> Result<()> {
     let icon = check_icon()?;
 
     // 6. 打包
-    package(&wasm, icon)?;
+    package(&wasm, icon, &manifest.id)?;
 
     Ok(())
 }
@@ -323,7 +347,7 @@ fn write_manifest(root: &Path, id: &str, kind: &str, author: &str, desc: &str) -
         "author": author,
         "description": desc,
         "kind": format!("kind/{}", kind),
-        "abi_version": 1
+        "abi-version": 1
     });
 
     fs::write(
@@ -337,7 +361,7 @@ fn write_manifest(root: &Path, id: &str, kind: &str, author: &str, desc: &str) -
 fn write_cargo(root: &Path, id: &str) -> Result<()> {
     let content = format!(
         r#"[package]
-name = "fcplug-{}"
+name = "fcplug_{}"
 version = "0.1.0"
 edition = "2024"
 
@@ -346,10 +370,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = {{ version = "0.53.1", features = ["macros"] }}
-serde = {{ version = "1.0", features = ["derive"] }}
 serde_json = "1.0"
 "#,
-        id
+        id.replace('-', "_")
     );
 
     fs::write(root.join("Cargo.toml"), content)?;
@@ -357,37 +380,33 @@ serde_json = "1.0"
 }
 
 fn write_lib(root: &Path) -> Result<()> {
-    let code = format!(
-        r#"mod types;
-
-wit_bindgen::generate!({{
+    let code = r#"wit_bindgen::generate!({
     path: "wit/plugin.wit",
     world: "api",
-}});
+});
 
 use crate::exports::mapper::plugin::mapper::Guest;
 
 struct MyPlugin;
 
-impl Guest for MyPlugin {{
+impl Guest for MyPlugin {
 
-    fn map_request(input: String) -> String {{
+    fn map_request(input: String) -> String {
         input
-    }}
+    }
 
-    fn map_response(input: String) -> String {{
+    fn map_response(input: String) -> String {
         input
-    }}
-}}
+    }
 
-export!(MyPlugin);
-"#);
-    fs::write(root.join("src/lib.rs"), code)?;
-    Ok(())
+    fn map_stream_line(input: String) -> String {
+        input
+    }
 }
 
-fn write_types(root: &Path) -> Result<()> {
-    fs::write(root.join("src/types.rs"), DEFAULT_TYPES)?;
+export!(MyPlugin);
+"#;
+    fs::write(root.join("src/lib.rs"), code)?;
     Ok(())
 }
 
@@ -403,5 +422,10 @@ fn write_icon(root: &Path) -> Result<()> {
 
 fn write_readme(root: &Path) -> Result<()> {
     fs::write(root.join("README.md"), DEFAULT_README)?;
+    Ok(())
+}
+
+fn write_gitignore(root: &Path) -> Result<()> {
+    fs::write(root.join(".gitignore"), "/target\n/dist\n")?;
     Ok(())
 }
