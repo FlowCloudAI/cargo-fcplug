@@ -9,6 +9,23 @@ use std::process::Command;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
+const COLOR_RESET: &str = "\x1b[0m";
+const COLOR_GREEN: &str = "\x1b[32m";
+const COLOR_YELLOW: &str = "\x1b[33m";
+const COLOR_RED: &str = "\x1b[31m";
+
+fn info(msg: &str) {
+    println!("{COLOR_GREEN}[INFO]{COLOR_RESET} {msg}");
+}
+
+fn warning(msg: &str) {
+    println!("{COLOR_YELLOW}[WARN]{COLOR_RESET} {msg}");
+}
+
+fn error(msg: &str) {
+    eprintln!("{COLOR_RED}[ERROR]{COLOR_RESET} {msg}");
+}
+
 const ABI_VERSION: u32 = 1;
 static DEFAULT_ICON: &[u8] = include_bytes!("../src/templates/icon.png");
 static DEFAULT_README: &[u8] = include_bytes!("../src/templates/README.md");
@@ -80,7 +97,7 @@ fn ask(prompt: &str, default: &str) -> Result<String> {
 }
 
 fn build_wasm() -> Result<()> {
-    println!("== Building WASM plugin ==");
+    info("== Building WASM plugin ==");
 
     let status = Command::new("cargo")
         .args(["build", "--target", "wasm32-wasip2", "--release"])
@@ -111,7 +128,7 @@ fn find_wasm() -> Result<PathBuf> {
 }
 
 fn optimize_wasm(wasm: &Path) -> Result<()> {
-    println!("== Running wasm-opt ==");
+    info("== Running wasm-opt ==");
 
     let status = Command::new("wasm-opt")
         .args(["-Oz"])
@@ -123,14 +140,14 @@ fn optimize_wasm(wasm: &Path) -> Result<()> {
     match status {
         Ok(s) if s.success() => Ok(()),
         _ => {
-            println!("Warning: wasm-opt not found or failed, skipping optimization");
+            warning("Warning: wasm-opt not found or failed, skipping optimization");
             Ok(())
         }
     }
 }
 
 fn validate_manifest() -> Result<Manifest> {
-    println!("== Validating manifest.json ==");
+    info("== Validating manifest.json ==");
 
     let mut file = File::open("manifest.json").map_err(|_| anyhow!("manifest.json not found"))?;
 
@@ -258,7 +275,7 @@ fn run_init(path: Option<String>) -> Result<()> {
     loop {
         kind = ask("Plugin kind (llm|image|tts)", "llm")?;
         if kind != "llm" && kind != "image" && kind != "tts" {
-            println!("Invalid plugin kind!");
+            error("Invalid plugin kind!");
         } else {
             break;
         }
@@ -285,7 +302,7 @@ fn run_init(path: Option<String>) -> Result<()> {
     write_gitignore(&root)?;
 
     println!();
-    println!("Plugin scaffold created:");
+    info("Plugin scaffold created:");
     println!("{}", root.display());
 
     Ok(())
@@ -324,7 +341,7 @@ fn run_build(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() {
     let mut argv: Vec<String> = std::env::args().collect();
 
     if argv.get(1).map(|s| s == "fcplug").unwrap_or(false) {
@@ -333,9 +350,13 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse_from(argv);
 
-    match cli.command {
+    let res = match cli.command {
         Commands::Init(args) => run_init(args.path),
         Commands::Build(args) => run_build(args),
+    };
+    if let Err(e) = res {
+        error(&e.to_string());
+        std::process::exit(1);
     }
 }
 
@@ -347,7 +368,12 @@ fn write_manifest(root: &Path, id: &str, kind: &str, author: &str, desc: &str) -
         "author": author,
         "description": desc,
         "kind": format!("kind/{}", kind),
-        "abi-version": 1
+        "abi-version": 1,
+        "url":"server URL",
+        "module-list":[
+            "module1",
+            "module2"
+        ]
     });
 
     fs::write(
