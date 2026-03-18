@@ -287,36 +287,28 @@ fn find_wasm() -> Result<PathBuf> {
 fn optimize_wasm(wasm: &Path) -> Result<()> {
     let size_before = fs::metadata(wasm)?.len();
     let start = Instant::now();
-
-    // Write to a temporary file to avoid corrupting the original on failure
     let tmp_path = wasm.with_extension("wasm.opt.tmp");
 
-    let status = Command::new("wasm-opt")
-        .args(["-Oz"])
+    // wasm-tools strip: remove debug info, custom sections, etc.
+    let status = Command::new("wasm-tools")
+        .args(["strip", "-a"])
         .arg(wasm)
-        .args(["-o"])
+        .arg("-o")
         .arg(&tmp_path)
         .status();
 
     match status {
         Ok(s) if s.success() => {
-            // Verify the temp file exists and is non-empty before replacing
             let tmp_size = fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
             if tmp_size == 0 {
                 let _ = fs::remove_file(&tmp_path);
-                warning("wasm-opt produced an empty file, keeping original");
+                warning("wasm-tools produced an empty file, keeping original");
                 return Ok(());
             }
 
-            // Replace the original with the optimized version
             if let Err(e) = fs::rename(&tmp_path, wasm) {
-                // rename may fail across filesystems, fall back to copy + delete
-                fs::copy(&tmp_path, wasm).map_err(|copy_err| {
-                    anyhow!(
-                        "failed to replace wasm with optimized version (rename: {}, copy: {})",
-                        e,
-                        copy_err
-                    )
+                fs::copy(&tmp_path, wasm).map_err(|ce| {
+                    anyhow!("failed to replace wasm (rename: {}, copy: {})", e, ce)
                 })?;
                 let _ = fs::remove_file(&tmp_path);
             }
@@ -329,7 +321,7 @@ fn optimize_wasm(wasm: &Path) -> Result<()> {
                 0.0
             };
             info(&format!(
-                "wasm-opt done in {} ({} → {}, -{:.1}%)",
+                "wasm-tools strip done in {} ({} → {}, -{:.1}%)",
                 elapsed_str(start),
                 human_size(size_before),
                 human_size(size_after),
@@ -339,22 +331,15 @@ fn optimize_wasm(wasm: &Path) -> Result<()> {
         }
         Ok(s) => {
             let _ = fs::remove_file(&tmp_path);
-            let code = s
-                .code()
+            let code = s.code()
                 .map(|c| format!("exit code {}", c))
                 .unwrap_or_else(|| "killed by signal".into());
-            warning(&format!(
-                "wasm-opt failed ({}), skipping optimization",
-                code
-            ));
+            warning(&format!("wasm-tools strip failed ({}), skipping", code));
             Ok(())
         }
         Err(e) => {
-            warning(&format!(
-                "wasm-opt not found ({}), skipping optimization",
-                e
-            ));
-            detail("Install: https://github.com/WebAssembly/binaryen");
+            warning(&format!("wasm-tools not found ({}), skipping optimization", e));
+            detail("Install: cargo install wasm-tools");
             Ok(())
         }
     }
