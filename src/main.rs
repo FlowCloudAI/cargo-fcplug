@@ -7,9 +7,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
+use url::Url;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
-use url::Url;
 
 const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_GREEN: &str = "\x1b[32m";
@@ -27,10 +27,7 @@ fn detail(msg: &str) {
 }
 
 fn step(index: u32, total: u32, msg: &str) {
-    println!(
-        "\n{COLOR_CYAN}[{}/{}]{COLOR_RESET} {msg}",
-        index, total
-    );
+    println!("\n{COLOR_CYAN}[{}/{}]{COLOR_RESET} {msg}", index, total);
 }
 
 fn warning(msg: &str) {
@@ -66,8 +63,6 @@ fn elapsed_str(start: Instant) -> String {
     }
 }
 
-/// Validate a plugin id: non-empty, lowercase ASCII alphanumeric + hyphens,
-/// must start with a letter, max 64 characters.
 fn validate_plugin_id(id: &str) -> Result<()> {
     if id.is_empty() {
         return Err(anyhow!("plugin id cannot be empty"));
@@ -105,7 +100,6 @@ fn validate_plugin_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate author: non-empty, printable ASCII, max 128 characters.
 fn validate_author(author: &str) -> Result<()> {
     if author.is_empty() {
         return Err(anyhow!("author cannot be empty"));
@@ -124,18 +118,16 @@ fn validate_author(author: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate description: max 100 characters.
 fn validate_description(description: &str) -> Result<()> {
     if description.len() > 100 {
         return Err(anyhow!(
-            "description is too long ({} chars, max 1024)",
+            "description is too long ({} chars, max 100)",
             description.len()
         ));
     }
     Ok(())
 }
 
-/// Validate version string: basic semver format (x.y.z).
 fn validate_version(version: &str) -> Result<()> {
     let parts: Vec<&str> = version.split('.').collect();
     if parts.len() != 3 {
@@ -155,10 +147,8 @@ fn validate_version(version: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate URL: must be http or https.
 fn validate_url(raw: &str) -> Result<()> {
-    let parsed = Url::parse(raw)
-        .map_err(|e| anyhow!("invalid URL \"{}\": {}", raw, e))?;
+    let parsed = Url::parse(raw).map_err(|e| anyhow!("invalid URL \"{}\": {}", raw, e))?;
 
     match parsed.scheme() {
         "http" | "https" => Ok(()),
@@ -166,7 +156,7 @@ fn validate_url(raw: &str) -> Result<()> {
     }
 }
 
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
 static DEFAULT_ICON: &[u8] = include_bytes!("../src/templates/icon.png");
 static DEFAULT_README: &[u8] = include_bytes!("../src/templates/README.md");
 static DEFAULT_WIT: &[u8] = include_bytes!("../src/templates/plugin.wit");
@@ -202,14 +192,14 @@ struct BuildArgs {
 #[derive(Parser)]
 #[command(about = "Create a new plugin project scaffold")]
 struct InitArgs {
-    /// Parent directory where the plugin project folder will be created
     #[arg(long)]
     parent_dir: Option<String>,
 }
 
+/// manifest.json 的 meta 块
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct Manifest {
+struct ManifestMeta {
     id: String,
     name: String,
     author: String,
@@ -219,7 +209,16 @@ struct Manifest {
     kind: String,
     abi_version: u32,
     url: String,
-    model_list: Vec<String>,
+}
+
+/// manifest.json 顶层结构
+#[derive(Deserialize)]
+struct Manifest {
+    meta: ManifestMeta,
+
+    /// 类型特定的扩展字段
+    #[serde(flatten)]
+    ext: Value,
 }
 
 fn ask(prompt: &str, default: &str) -> Result<String> {
@@ -289,7 +288,6 @@ fn optimize_wasm(wasm: &Path) -> Result<()> {
     let start = Instant::now();
     let tmp_path = wasm.with_extension("wasm.opt.tmp");
 
-    // wasm-tools strip: remove debug info, custom sections, etc.
     let status = Command::new("wasm-tools")
         .args(["strip", "-a"])
         .arg(wasm)
@@ -331,14 +329,18 @@ fn optimize_wasm(wasm: &Path) -> Result<()> {
         }
         Ok(s) => {
             let _ = fs::remove_file(&tmp_path);
-            let code = s.code()
+            let code = s
+                .code()
                 .map(|c| format!("exit code {}", c))
                 .unwrap_or_else(|| "killed by signal".into());
             warning(&format!("wasm-tools strip failed ({}), skipping", code));
             Ok(())
         }
         Err(e) => {
-            warning(&format!("wasm-tools not found ({}), skipping optimization", e));
+            warning(&format!(
+                "wasm-tools not found ({}), skipping optimization",
+                e
+            ));
             detail("Install: cargo install wasm-tools");
             Ok(())
         }
@@ -358,84 +360,133 @@ fn validate_manifest() -> Result<Manifest> {
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
 
-    let manifest: Manifest =
-        serde_json::from_str(&buf).map_err(|e| {
-            let line = e.line();
-            let col = e.column();
-            let loc = format!(" at line {}, column {}", line, col);
-            anyhow!("invalid manifest.json{}: {}", loc, e)
-        })?;
+    let manifest: Manifest = serde_json::from_str(&buf).map_err(|e| {
+        let line = e.line();
+        let col = e.column();
+        let loc = format!(" at line {}, column {}", line, col);
+        anyhow!("invalid manifest.json{}: {}", loc, e)
+    })?;
 
-    // Field validations with specific guidance
-    validate_plugin_id(&manifest.id).map_err(|e| {
+    let meta = &manifest.meta;
+
+    // Field validations
+    validate_plugin_id(&meta.id).map_err(|e| {
         anyhow!(
-            "manifest.id is invalid: {}\n       Example: \"id\": \"my-awesome-plugin\"",
+            "meta.id is invalid: {}\n       Example: \"id\": \"my-awesome-plugin\"",
             e
         )
     })?;
 
-    if manifest.name.trim().is_empty() {
+    if meta.name.trim().is_empty() {
         return Err(anyhow!(
-            "manifest.name cannot be empty\n       Example: \"name\": \"My Plugin\""
+            "meta.name cannot be empty\n       Example: \"name\": \"My Plugin\""
         ));
     }
 
-    validate_version(&manifest.version).map_err(|e| {
+    validate_version(&meta.version).map_err(|e| {
         anyhow!(
-            "manifest.version is invalid: {}\n       Example: \"version\": \"0.1.0\"",
+            "meta.version is invalid: {}\n       Example: \"version\": \"0.1.0\"",
             e
         )
     })?;
 
-    validate_author(&manifest.author).map_err(|e| {
+    validate_author(&meta.author).map_err(|e| {
         anyhow!(
-            "manifest.author is invalid: {}\n       Example: \"author\": \"yourname\"",
+            "meta.author is invalid: {}\n       Example: \"author\": \"yourname\"",
             e
         )
     })?;
 
-    validate_url(&manifest.url).map_err(|e| {
+    validate_url(&meta.url).map_err(|e| {
         anyhow!(
-            "manifest.author is invalid:{}\n       Example: \"url\": \"https://example.com/my-plugin\"",
+            "meta.url is invalid: {}\n       Example: \"url\": \"https://api.example.com/v1\"",
             e
         )
     })?;
-
-    if !manifest.url.starts_with("http://") && !manifest.url.starts_with("https://") {
-        return Err(anyhow!(
-            "manifest.url must be a valid HTTPS/HTTP URL\n       Example: \"url\": \"https://example.com/my-plugin\""
-        ));
-    }
-    if manifest.model_list.is_empty() {
-        return Err(anyhow!(
-            "manifest.model-list cannot be empty\n       Example: \"model-list\": [\"deepseek-chat\"]"
-        ));
-    }
 
     let valid_kinds = ["kind/llm", "kind/image", "kind/tts"];
-    if !valid_kinds.contains(&manifest.kind.as_str()) {
+    if !valid_kinds.contains(&meta.kind.as_str()) {
         return Err(anyhow!(
-            "manifest.kind is \"{}\", must be one of: {}\n       Example: \"kind\": \"kind/llm\"",
-            manifest.kind,
+            "meta.kind is \"{}\", must be one of: {}\n       Example: \"kind\": \"kind/llm\"",
+            meta.kind,
             valid_kinds.join(", ")
         ));
     }
 
-    if manifest.abi_version != ABI_VERSION {
+    if meta.abi_version != ABI_VERSION {
         return Err(anyhow!(
-            "manifest.abi-version is {}, expected {}\n       Hint: update to the current ABI version",
-            manifest.abi_version,
+            "meta.abi-version is {}, expected {}\n       Hint: update to the current ABI version",
+            meta.abi_version,
             ABI_VERSION
         ));
     }
 
+    // 验证类型特定字段
+    validate_ext(&meta.kind, &manifest.ext)?;
+
     info(&format!(
         "Manifest OK: {} ({}) v{} [{}]",
-        manifest.name, manifest.id, manifest.version, manifest.kind
+        meta.name, meta.id, meta.version, meta.kind
     ));
-    detail(&format!("Author: {}", manifest.author));
+    detail(&format!("Author: {}", meta.author));
 
     Ok(manifest)
+}
+
+/// 验证类型特定的扩展字段
+fn validate_ext(kind: &str, ext: &Value) -> Result<()> {
+    // models 对所有类型都是必需的
+    let models = ext.get("models").and_then(|v| v.as_array());
+
+    match models {
+        Some(arr) if !arr.is_empty() => {}
+        _ => {
+            return Err(anyhow!(
+                "\"models\" cannot be empty\n       Example: \"models\": [\"model-name\"]"
+            ));
+        }
+    }
+
+    match kind {
+        "kind/tts" => {
+            // voices 对 TTS 是必需的
+            let voices = ext.get("voices").and_then(|v| v.as_array());
+            match voices {
+                Some(arr) if !arr.is_empty() => {
+                    for (i, v) in arr.iter().enumerate() {
+                        if v.get("id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .is_empty()
+                        {
+                            return Err(anyhow!("voices[{}].id cannot be empty", i));
+                        }
+                        if v.get("name")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .is_empty()
+                        {
+                            return Err(anyhow!("voices[{}].name cannot be empty", i));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "\"voices\" is required for TTS plugins and cannot be empty\n       ..."
+                    ));
+                }
+            }
+        }
+        "kind/image" => {
+            // supported-sizes 对 Image 推荐但非必需，仅警告
+            if ext.get("supported-sizes").is_none() {
+                warning("\"supported-sizes\" not specified for image plugin");
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 fn check_icon() -> Result<PathBuf> {
@@ -610,7 +661,6 @@ fn run_build(args: BuildArgs) -> Result<()> {
     let total_steps = 3 + (!args.no_build as u32) + (!args.no_opt as u32);
     let mut current_step: u32 = 0;
 
-    // 0. Cargo.toml check
     if !Path::new("Cargo.toml").exists() {
         return Err(anyhow!(
             "Cargo.toml not found in current directory: {}\n       Hint: run this command from the plugin project root",
@@ -620,12 +670,10 @@ fn run_build(args: BuildArgs) -> Result<()> {
         ));
     }
 
-    // 1. Validate manifest
     current_step += 1;
     step(current_step, total_steps, "Validating manifest.json");
     let manifest = validate_manifest()?;
 
-    // 2. Build WASM
     if !args.no_build {
         current_step += 1;
         step(
@@ -638,12 +686,10 @@ fn run_build(args: BuildArgs) -> Result<()> {
         info("Skipping build (--no-build)");
     }
 
-    // 3. Locate artifact
     current_step += 1;
     step(current_step, total_steps, "Locating WASM artifact");
     let wasm = find_wasm()?;
 
-    // 4. Optimize
     if !args.no_opt {
         current_step += 1;
         step(current_step, total_steps, "Optimizing WASM binary");
@@ -652,13 +698,11 @@ fn run_build(args: BuildArgs) -> Result<()> {
         info("Skipping optimization (--no-opt)");
     }
 
-    // 5. Check icon
     current_step += 1;
     step(current_step, total_steps, "Checking icon & packaging");
     let icon = check_icon()?;
 
-    // 6. Package
-    package(&wasm, &icon, &manifest.id)?;
+    package(&wasm, &icon, &manifest.meta.id)?;
 
     println!();
     println!(
@@ -689,20 +733,55 @@ fn main() {
 }
 
 fn write_manifest(root: &Path, id: &str, kind: &str, author: &str, desc: &str) -> Result<()> {
-    let manifest = serde_json::json!({
-        "id": id,
-        "name": id,
-        "version": "0.1.0",
-        "author": author,
-        "description": desc,
-        "kind": format!("kind/{}", kind),
-        "abi-version": 1,
-        "url":"https://api.example.com/v1",
-        "model-list":[
-            "module1",
-            "module2"
-        ]
+    let mut manifest = serde_json::json!({
+        "meta": {
+            "id": id,
+            "name": id,
+            "version": "0.1.0",
+            "author": author,
+            "description": desc,
+            "kind": format!("kind/{}", kind),
+            "abi-version": ABI_VERSION,
+            "url": "https://api.example.com/v1"
+        },
+        "models": ["model-1"]
     });
+
+    // 按类型添加默认扩展字段
+    match kind {
+        "llm" => {
+            manifest["default-model"] = serde_json::json!("model-1");
+            manifest["supports-thinking"] = serde_json::json!(false);
+            manifest["supports-tools"] = serde_json::json!(true);
+            manifest["supports-stream"] = serde_json::json!(true);
+        }
+        "tts" => {
+            manifest["voices"] = serde_json::json!([
+                {
+                    "id": "default-voice",
+                    "name": "Default Voice",
+                    "language": ["Chinese", "English"]
+                }
+            ]);
+            manifest["default-model"] = serde_json::json!("model-1");
+            manifest["default-voice"] = serde_json::json!("default-voice");
+            manifest["supported-formats"] = serde_json::json!(["mp3", "wav"]);
+            manifest["supported-languages"] = serde_json::json!(["Chinese", "English"]);
+            manifest["max-characters"] = serde_json::json!(10000);
+            manifest["supports-emotion"] = serde_json::json!(false);
+            manifest["supports-voice-modify"] = serde_json::json!(false);
+            manifest["supports-ssml"] = serde_json::json!(false);
+        }
+        "image" => {
+            manifest["default-model"] = serde_json::json!("model-1");
+            manifest["supported-sizes"] = serde_json::json!(["1024x1024"]);
+            manifest["supported-formats"] = serde_json::json!(["png"]);
+            manifest["supports-negative-prompt"] = serde_json::json!(false);
+            manifest["supports-image-to-image"] = serde_json::json!(false);
+            manifest["max-batch-size"] = serde_json::json!(1);
+        }
+        _ => {}
+    }
 
     fs::write(
         root.join("manifest.json"),
