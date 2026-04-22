@@ -11,33 +11,45 @@ use url::Url;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
+/// 终端颜色重置码
 const COLOR_RESET: &str = "\x1b[0m";
+/// 绿色（用于 [INFO]）
 const COLOR_GREEN: &str = "\x1b[32m";
+/// 黄色（用于 [WARN]）
 const COLOR_YELLOW: &str = "\x1b[33m";
+/// 红色（用于 [ERROR]）
 const COLOR_RED: &str = "\x1b[31m";
+/// 青色（用于步骤序号）
 const COLOR_CYAN: &str = "\x1b[36m";
+/// 暗淡色（用于辅助信息）
 const COLOR_DIM: &str = "\x1b[2m";
 
+/// 打印绿色 [INFO] 信息到 stdout
 fn info(msg: &str) {
     println!("{COLOR_GREEN}[INFO]{COLOR_RESET} {msg}");
 }
 
+/// 打印暗淡色的辅助信息到 stdout
 fn detail(msg: &str) {
     println!("{COLOR_DIM}      {msg}{COLOR_RESET}");
 }
 
+/// 打印带序号的构建步骤标题
 fn step(index: u32, total: u32, msg: &str) {
     println!("\n{COLOR_CYAN}[{}/{}]{COLOR_RESET} {msg}", index, total);
 }
 
+/// 打印黄色 [WARN] 警告信息到 stdout
 fn warning(msg: &str) {
     println!("{COLOR_YELLOW}[WARN]{COLOR_RESET} {msg}");
 }
 
+/// 打印红色 [ERROR] 错误信息到 stderr
 fn error(msg: &str) {
     eprintln!("{COLOR_RED}[ERROR]{COLOR_RESET} {msg}");
 }
 
+/// 将字节数转换为人类可读的容量字符串（B / KB / MB / GB）
 fn human_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * 1024;
@@ -54,6 +66,7 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
+/// 将 `Instant` 转换为耗时字符串（如 "1.2s" 或 "350ms"）
 fn elapsed_str(start: Instant) -> String {
     let d = start.elapsed();
     if d.as_secs() >= 1 {
@@ -63,6 +76,8 @@ fn elapsed_str(start: Instant) -> String {
     }
 }
 
+/// 校验插件 ID 格式：必须以英文小写字母开头，仅允许小写字母、数字和连字符，
+/// 长度不超过 64，且不能以连字符结尾或包含连续连字符。
 fn validate_plugin_id(id: &str) -> Result<()> {
     if id.is_empty() {
         return Err(anyhow!("plugin id cannot be empty"));
@@ -100,6 +115,7 @@ fn validate_plugin_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 校验作者字段：非空，长度不超过 128，仅允许可打印 ASCII 字符。
 fn validate_author(author: &str) -> Result<()> {
     if author.is_empty() {
         return Err(anyhow!("author cannot be empty"));
@@ -118,6 +134,7 @@ fn validate_author(author: &str) -> Result<()> {
     Ok(())
 }
 
+/// 校验描述字段：长度不超过 100 字符。
 fn validate_description(description: &str) -> Result<()> {
     if description.len() > 100 {
         return Err(anyhow!(
@@ -128,6 +145,7 @@ fn validate_description(description: &str) -> Result<()> {
     Ok(())
 }
 
+/// 校验版本号格式：必须为三段式 semver（如 "1.0.0"）。
 fn validate_version(version: &str) -> Result<()> {
     let parts: Vec<&str> = version.split('.').collect();
     if parts.len() != 3 {
@@ -147,6 +165,7 @@ fn validate_version(version: &str) -> Result<()> {
     Ok(())
 }
 
+/// 校验 URL 格式：必须为 http 或 https 协议。
 fn validate_url(raw: &str) -> Result<()> {
     let parsed = Url::parse(raw).map_err(|e| anyhow!("invalid URL \"{}\": {}", raw, e))?;
 
@@ -156,11 +175,16 @@ fn validate_url(raw: &str) -> Result<()> {
     }
 }
 
+/// 当前插件 ABI 版本号
 const ABI_VERSION: u32 = 2;
+/// 默认插件图标（PNG）
 static DEFAULT_ICON: &[u8] = include_bytes!("../src/templates/icon.png");
-static DEFAULT_README: &[u8] = include_bytes!("../src/templates/README.md");
+/// 默认 README 模板
+static DEFAULT_README: &[u8] = include_bytes!("../src/templates/Readme.md");
+/// 默认 WIT 接口定义模板
 static DEFAULT_WIT: &[u8] = include_bytes!("../src/templates/plugin.wit");
 
+/// CLI 顶层参数解析器
 #[derive(Parser)]
 #[command(
     bin_name = "cargo fcplug",
@@ -173,30 +197,36 @@ struct Cli {
     command: Commands,
 }
 
+/// CLI 子命令枚举
 #[derive(clap::Subcommand)]
 enum Commands {
     Build(BuildArgs),
     Init(InitArgs),
 }
 
+/// `build` 子命令参数
 #[derive(Parser)]
 #[command(about = "Build and package a plugin into .fcplug")]
 struct BuildArgs {
+    /// 跳过编译，直接打包已有 WASM
     #[arg(long)]
     no_build: bool,
 
+    /// 跳过 wasm-tools strip 优化
     #[arg(long)]
     no_opt: bool,
 }
 
+/// `init` 子命令参数
 #[derive(Parser)]
 #[command(about = "Create a new plugin project scaffold")]
 struct InitArgs {
+    /// 指定创建项目的父目录（默认为当前目录）
     #[arg(long)]
     parent_dir: Option<String>,
 }
 
-/// manifest.json 的 meta 块
+/// `manifest.json` 中的 `meta` 字段结构
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct ManifestMeta {
@@ -211,16 +241,17 @@ struct ManifestMeta {
     url: String,
 }
 
-/// manifest.json 顶层结构
+/// `manifest.json` 顶层结构
 #[derive(Deserialize)]
 struct Manifest {
     meta: ManifestMeta,
 
-    /// 类型特定的扩展字段
+    /// 类型特定的扩展字段（如 `models`、`voices` 等）
     #[serde(flatten)]
     ext: Value,
 }
 
+/// 交互式询问用户输入，若输入为空则返回默认值
 fn ask(prompt: &str, default: &str) -> Result<String> {
     use std::io::{Write, stdin, stdout};
 
@@ -238,6 +269,7 @@ fn ask(prompt: &str, default: &str) -> Result<String> {
     }
 }
 
+/// 调用 `cargo build` 编译插件为 WASM（target: wasm32-wasip2, release）
 fn build_wasm() -> Result<()> {
     let start = Instant::now();
 
@@ -258,6 +290,7 @@ fn build_wasm() -> Result<()> {
     Ok(())
 }
 
+/// 在 `target/wasm32-wasip2/release` 下查找编译生成的 `.wasm` 文件
 fn find_wasm() -> Result<PathBuf> {
     let cargo_toml: Value = toml::from_str(&fs::read_to_string("Cargo.toml")?)?;
     let crate_name = cargo_toml["package"]["name"]
@@ -283,6 +316,7 @@ fn find_wasm() -> Result<PathBuf> {
     }
 }
 
+/// 使用 `wasm-tools strip` 去除 WASM 中的调试信息，减小体积
 fn optimize_wasm(wasm: &Path) -> Result<()> {
     let size_before = fs::metadata(wasm)?.len();
     let start = Instant::now();
@@ -347,6 +381,7 @@ fn optimize_wasm(wasm: &Path) -> Result<()> {
     }
 }
 
+/// 读取并校验当前目录下的 `manifest.json`，返回解析后的结构体
 fn validate_manifest() -> Result<Manifest> {
     let manifest_path = Path::new("manifest.json");
 
@@ -489,6 +524,8 @@ fn validate_ext(kind: &str, ext: &Value) -> Result<()> {
     Ok(())
 }
 
+/// 检查当前目录下的 `icon.png`，若不存在则生成默认图标；
+/// 校验图标为正方形且尺寸不超过 128×128。
 fn check_icon() -> Result<PathBuf> {
     let icon = Path::new("icon.png");
 
@@ -523,6 +560,7 @@ fn check_icon() -> Result<PathBuf> {
     Ok(icon.to_path_buf())
 }
 
+/// 将 `manifest.json`、`plugin.wasm` 和 `icon.png` 打包为 `.fcplug`（ZIP 格式）
 fn package(wasm: &Path, icon: &Path, plugin_id: &str) -> Result<()> {
     let dist = Path::new("dist");
 
@@ -565,6 +603,7 @@ fn package(wasm: &Path, icon: &Path, plugin_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 读取 PNG 文件头，解析并返回图像的宽度和高度
 fn read_png_size(path: &Path) -> Result<(u32, u32)> {
     let mut f = File::open(path)?;
     let mut buf = [0u8; 24];
@@ -587,6 +626,7 @@ fn read_png_size(path: &Path) -> Result<(u32, u32)> {
     Ok((w, h))
 }
 
+/// 执行 `init` 子命令：交互式创建新插件项目脚手架
 fn run_init(parent_dir: Option<String>) -> Result<()> {
     println!("== Create new FlowCloudAI plugin ==\n");
 
@@ -655,6 +695,7 @@ fn run_init(parent_dir: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// 执行 `build` 子命令：校验、编译、优化、打包插件
 fn run_build(args: BuildArgs) -> Result<()> {
     let total_start = Instant::now();
 
@@ -713,6 +754,7 @@ fn run_build(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
+/// CLI 入口函数：解析参数并分发到对应子命令
 fn main() {
     let mut argv: Vec<String> = std::env::args().collect();
 
@@ -732,6 +774,7 @@ fn main() {
     }
 }
 
+/// 在插件项目目录下生成 `manifest.json`
 fn write_manifest(root: &Path, id: &str, kind: &str, author: &str, desc: &str) -> Result<()> {
     let mut manifest = serde_json::json!({
         "meta": {
@@ -791,6 +834,7 @@ fn write_manifest(root: &Path, id: &str, kind: &str, author: &str, desc: &str) -
     Ok(())
 }
 
+/// 在插件项目目录下生成 `Cargo.toml`
 fn write_cargo(root: &Path, id: &str) -> Result<()> {
     let content = format!(
         r#"[package]
@@ -812,6 +856,7 @@ serde_json = "1.0"
     Ok(())
 }
 
+/// 在插件项目目录下生成 `src/lib.rs`（包含默认 WIT 绑定和 Guest 实现）
 fn write_lib(root: &Path) -> Result<()> {
     let code = r#"wit_bindgen::generate!({
     path: "wit/plugin.wit",
@@ -843,21 +888,25 @@ export!(MyPlugin);
     Ok(())
 }
 
+/// 在插件项目目录下复制默认 WIT 接口定义到 `wit/plugin.wit`
 fn write_wit(root: &Path) -> Result<()> {
     fs::write(root.join("wit/plugin.wit"), DEFAULT_WIT)?;
     Ok(())
 }
 
+/// 在插件项目目录下复制默认图标到 `icon.png`
 fn write_icon(root: &Path) -> Result<()> {
     fs::write(root.join("icon.png"), DEFAULT_ICON)?;
     Ok(())
 }
 
+/// 在插件项目目录下复制默认 README 模板到 `README.md`
 fn write_readme(root: &Path) -> Result<()> {
     fs::write(root.join("README.md"), DEFAULT_README)?;
     Ok(())
 }
 
+/// 在插件项目目录下生成 `.gitignore`
 fn write_gitignore(root: &Path) -> Result<()> {
     fs::write(root.join(".gitignore"), "/target\n/dist\n")?;
     Ok(())
