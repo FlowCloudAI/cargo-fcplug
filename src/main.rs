@@ -404,7 +404,7 @@ fn validate_manifest() -> Result<Manifest> {
 
     let meta = &manifest.meta;
 
-    // Field validations
+    // 字段校验
     validate_plugin_id(&meta.id).map_err(|e| {
         anyhow!(
             "meta.id is invalid: {}\n       Example: \"id\": \"my-awesome-plugin\"",

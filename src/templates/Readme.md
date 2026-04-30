@@ -19,7 +19,7 @@
 
 ```bash
 # 编译 WASM
-cargo build --target wasm32-wasip1 --release
+cargo build --target wasm32-wasip2 --release
 
 # 打包为 .fcplug
 cargo fcplug build

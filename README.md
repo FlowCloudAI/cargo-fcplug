@@ -45,7 +45,7 @@ cargo fcplug build
 执行流程：
 
 1. 校验 `manifest.json` 格式与字段
-2. 编译 WASM（`wasm32-wasip2`，release 模式）
+2. 编译 WASM（`wasm32-wasip2`，release 模式；各插件 README 中的构建命令已统一为此目标）
 3. 定位编译产物
 4. 使用 `wasm-tools strip` 优化 WASM 体积
 5. 检查 `icon.png` 尺寸与格式
@@ -67,7 +67,7 @@ cargo fcplug build
 | 文件 | 说明 |
 |------|------|
 | `manifest.json` | 插件元数据（`meta` 结构：id、name、version、kind、abi-version、url 等） |
-| `plugin.wasm`   | 编译好的 WASM 组件（target: `wasm32-wasip2`） |
+| `plugin.wasm`   | 编译好的 WASM 组件（构建目标：`wasm32-wasip2`） |
 | `icon.png`      | 插件图标（≤ 128×128，正方形） |
 
 当前 ABI 版本：`2`
