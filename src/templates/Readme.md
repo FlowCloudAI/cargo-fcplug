@@ -63,10 +63,16 @@ world api {
     "version": "{PLUGIN_VERSION}",
     "author": "{PLUGIN_AUTHOR}",
     "description": "{PLUGIN_DESCRIPTION}",
+    "agreement-version": 1,
     "kind": "{PLUGIN_KIND}",
-    "abi-version": 2
+    "url": "https://api.example.com/v1"
   },
-  "models": []
+  "models": [
+    {
+      "id": "model-1",
+      "name": "Model 1"
+    }
+  ]
 }
 ```
 

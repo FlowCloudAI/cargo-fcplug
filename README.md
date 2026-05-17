@@ -1,6 +1,6 @@
 # cargo-fcplug
 
-`cargo-fcplug` 是 [FlowCloudAI](https://www.flowcloudai.cn) 的插件开发 CLI 工具，提供 `cargo fcplug` 子命令，用于快速创建、构建和打包 WASM 插件（`.fcplug`）。
+`cargo-fcplug` 是 [FlowCloudAI](https://www.flowcloudai.cn) 的插件开发 CLI 工具，提供 `cargo fcplug` 子命令，用于快速创建、迁移、构建和打包 WASM 插件（`.fcplug`）。
 
 ---
 
@@ -58,6 +58,20 @@ cargo fcplug build
 | `--no-build` | 跳过编译，直接打包已有 WASM |
 | `--no-opt`   | 跳过 `wasm-tools strip` 优化 |
 
+### 3. 迁移旧 manifest
+
+```bash
+cargo fcplug update
+```
+
+将旧 `abi-version = 2` manifest 迁移为 Agreement v1，包括：
+
+- `abi-version` → `agreement-version`
+- `kind/llm` / `kind/image` / `kind/tts` → `llm` / `image` / `tts`
+- `models: ["a"]` → `models: [{ "id": "a" }]`
+- `supports-*` → `default-supports`
+- `max-tokens` → 模型级 `max-output-tokens`
+
 ---
 
 ## 插件包格式
@@ -66,17 +80,17 @@ cargo fcplug build
 
 | 文件 | 说明 |
 |------|------|
-| `manifest.json` | 插件元数据（`meta` 结构：id、name、version、kind、abi-version、url 等） |
+| `manifest.json` | 插件元数据（`meta` 结构：id、name、version、kind、agreement-version、url 等） |
 | `plugin.wasm`   | 编译好的 WASM 组件（构建目标：`wasm32-wasip2`） |
 | `icon.png`      | 插件图标（≤ 128×128，正方形） |
 
-当前 ABI 版本：`2`
+当前协议版本：Agreement v1（`agreement-version = 1`）
 
 支持的 `kind`：
 
-- `kind/llm`
-- `kind/image`
-- `kind/tts`
+- `llm`
+- `image`
+- `tts`
 
 ---
 

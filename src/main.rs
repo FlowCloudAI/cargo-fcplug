@@ -2,8 +2,10 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Read;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -165,18 +167,34 @@ fn validate_version(version: &str) -> Result<()> {
     Ok(())
 }
 
-/// 校验 URL 格式：必须为 http 或 https 协议。
+/// 校验 URL 策略：公网必须使用 HTTPS，本地服务允许 HTTP。
 fn validate_url(raw: &str) -> Result<()> {
     let parsed = Url::parse(raw).map_err(|e| anyhow!("invalid URL \"{}\": {}", raw, e))?;
 
     match parsed.scheme() {
-        "http" | "https" => Ok(()),
+        "https" => Ok(()),
+        "http" => {
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| anyhow!("HTTP URL must contain a host"))?;
+            if host.eq_ignore_ascii_case("localhost") {
+                return Ok(());
+            }
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if ip.is_loopback() {
+                    return Ok(());
+                }
+            }
+            Err(anyhow!(
+                "HTTP is only allowed for localhost/loopback endpoints; use HTTPS for public endpoints"
+            ))
+        }
         s => Err(anyhow!("URL scheme must be http or https, got \"{}\"", s)),
     }
 }
 
-/// 当前插件 ABI 版本号
-const ABI_VERSION: u32 = 2;
+/// 当前插件协议版本号
+const AGREEMENT_VERSION: u32 = 1;
 /// 默认插件图标（PNG）
 static DEFAULT_ICON: &[u8] = include_bytes!("../src/templates/icon.png");
 /// 默认 README 模板
@@ -202,6 +220,7 @@ struct Cli {
 enum Commands {
     Build(BuildArgs),
     Init(InitArgs),
+    Update(UpdateArgs),
 }
 
 /// `build` 子命令参数
@@ -226,6 +245,11 @@ struct InitArgs {
     parent_dir: Option<String>,
 }
 
+/// `update` 子命令参数
+#[derive(Parser)]
+#[command(about = "Migrate manifest.json from ABI v2 to agreement v1")]
+struct UpdateArgs {}
+
 /// `manifest.json` 中的 `meta` 字段结构
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -233,11 +257,10 @@ struct ManifestMeta {
     id: String,
     name: String,
     author: String,
-    #[allow(unused)]
-    description: Option<String>,
+    description: String,
     version: String,
     kind: String,
-    abi_version: u32,
+    agreement_version: u32,
     url: String,
 }
 
@@ -395,11 +418,32 @@ fn validate_manifest() -> Result<Manifest> {
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
 
-    let manifest: Manifest = serde_json::from_str(&buf).map_err(|e| {
+    let raw: Value = serde_json::from_str(&buf).map_err(|e| {
         let line = e.line();
         let col = e.column();
         let loc = format!(" at line {}, column {}", line, col);
         anyhow!("invalid manifest.json{}: {}", loc, e)
+    })?;
+
+    if raw
+        .get("meta")
+        .and_then(|m| m.get("abi-version"))
+        .is_some()
+        && raw
+            .get("meta")
+            .and_then(|m| m.get("agreement-version"))
+            .is_none()
+    {
+        return Err(anyhow!(
+            "manifest.json still uses abi-version; run `cargo fcplug update` to migrate to agreement-version = 1"
+        ));
+    }
+
+    let manifest: Manifest = serde_json::from_value(raw).map_err(|e| {
+        anyhow!(
+            "invalid Agreement v1 manifest: {}\n       Hint: run `cargo fcplug update` for old ABI v2 manifests",
+            e
+        )
     })?;
 
     let meta = &manifest.meta;
@@ -417,6 +461,18 @@ fn validate_manifest() -> Result<Manifest> {
             "meta.name cannot be empty\n       Example: \"name\": \"My Plugin\""
         ));
     }
+
+    if meta.description.trim().is_empty() {
+        return Err(anyhow!(
+            "meta.description cannot be empty\n       Example: \"description\": \"My plugin\""
+        ));
+    }
+    validate_description(&meta.description).map_err(|e| {
+        anyhow!(
+            "meta.description is invalid: {}\n       Keep the UI description concise",
+            e
+        )
+    })?;
 
     validate_version(&meta.version).map_err(|e| {
         anyhow!(
@@ -439,20 +495,20 @@ fn validate_manifest() -> Result<Manifest> {
         )
     })?;
 
-    let valid_kinds = ["kind/llm", "kind/image", "kind/tts"];
+    let valid_kinds = ["llm", "image", "tts"];
     if !valid_kinds.contains(&meta.kind.as_str()) {
         return Err(anyhow!(
-            "meta.kind is \"{}\", must be one of: {}\n       Example: \"kind\": \"kind/llm\"",
+            "meta.kind is \"{}\", must be one of: {}\n       Example: \"kind\": \"llm\"",
             meta.kind,
             valid_kinds.join(", ")
         ));
     }
 
-    if meta.abi_version != ABI_VERSION {
+    if meta.agreement_version != AGREEMENT_VERSION {
         return Err(anyhow!(
-            "meta.abi-version is {}, expected {}\n       Hint: update to the current ABI version",
-            meta.abi_version,
-            ABI_VERSION
+            "meta.agreement-version is {}, expected {}\n       Hint: update to the current agreement version",
+            meta.agreement_version,
+            AGREEMENT_VERSION
         ));
     }
 
@@ -470,20 +526,12 @@ fn validate_manifest() -> Result<Manifest> {
 
 /// 验证类型特定的扩展字段
 fn validate_ext(kind: &str, ext: &Value) -> Result<()> {
-    // models 对所有类型都是必需的
-    let models = ext.get("models").and_then(|v| v.as_array());
-
-    match models {
-        Some(arr) if !arr.is_empty() => {}
-        _ => {
-            return Err(anyhow!(
-                "\"models\" cannot be empty\n       Example: \"models\": [\"model-name\"]"
-            ));
-        }
-    }
+    let model_ids = validate_models(ext)?;
+    validate_default_model(ext, &model_ids)?;
 
     match kind {
-        "kind/tts" => {
+        "llm" => validate_llm_ext(ext)?,
+        "tts" => {
             // voices 对 TTS 是必需的
             let voices = ext.get("voices").and_then(|v| v.as_array());
             match voices {
@@ -511,8 +559,19 @@ fn validate_ext(kind: &str, ext: &Value) -> Result<()> {
                     ));
                 }
             }
+            if let Some(default_voice) = ext.get("default-voice").and_then(|v| v.as_str()) {
+                let Some(voices_arr) = voices else {
+                    return Err(anyhow!("\"voices\" is required for TTS plugins"));
+                };
+                let found = voices_arr
+                    .iter()
+                    .any(|v| v.get("id").and_then(|x| x.as_str()) == Some(default_voice));
+                if !found {
+                    return Err(anyhow!("\"default-voice\" must match a voice id"));
+                }
+            }
         }
-        "kind/image" => {
+        "image" => {
             // supported-sizes 对 Image 推荐但非必需，仅警告
             if ext.get("supported-sizes").is_none() {
                 warning("\"supported-sizes\" not specified for image plugin");
@@ -521,6 +580,131 @@ fn validate_ext(kind: &str, ext: &Value) -> Result<()> {
         _ => {}
     }
 
+    Ok(())
+}
+
+/// 校验通用 models 数组，返回模型 ID 列表。
+fn validate_models(ext: &Value) -> Result<Vec<String>> {
+    let models = ext
+        .get("models")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("\"models\" is required and must be a non-empty array"))?;
+
+    if models.is_empty() {
+        return Err(anyhow!(
+            "\"models\" cannot be empty\n       Example: \"models\": [{{\"id\":\"model-name\"}}]"
+        ));
+    }
+
+    let mut ids = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (i, model) in models.iter().enumerate() {
+        let id = model
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if id.is_empty() {
+            return Err(anyhow!("models[{}].id cannot be empty", i));
+        }
+        if !seen.insert(id.to_string()) {
+            return Err(anyhow!("duplicate model id: {}", id));
+        }
+        ids.push(id.to_string());
+
+        validate_positive_u64(model, "context-window-tokens", &format!("models[{i}]"))?;
+        validate_positive_u64(model, "max-output-tokens", &format!("models[{i}]"))?;
+    }
+
+    Ok(ids)
+}
+
+/// 校验默认模型引用。
+fn validate_default_model(ext: &Value, model_ids: &[String]) -> Result<()> {
+    if let Some(default_model) = ext.get("default-model").and_then(|v| v.as_str()) {
+        if !model_ids.iter().any(|id| id == default_model) {
+            return Err(anyhow!("\"default-model\" must match a model id"));
+        }
+    }
+    Ok(())
+}
+
+/// 校验 LLM 专属扩展字段。
+fn validate_llm_ext(ext: &Value) -> Result<()> {
+    validate_thinking_efforts(ext.get("default-thinking-efforts"), "default-thinking-efforts")?;
+
+    if let Some(models) = ext.get("models").and_then(|v| v.as_array()) {
+        let default_supports = ext.get("default-supports").unwrap_or(&Value::Null);
+        let default_thinking = support_bool(default_supports, "thinking").unwrap_or(false);
+        let default_efforts = ext
+            .get("default-thinking-efforts")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.len())
+            .unwrap_or(0);
+
+        for (i, model) in models.iter().enumerate() {
+            let label = format!("models[{i}].thinking-efforts");
+            validate_thinking_efforts(model.get("thinking-efforts"), &label)?;
+
+            let thinking = model
+                .get("supports")
+                .and_then(|v| support_bool(v, "thinking"))
+                .unwrap_or(default_thinking);
+            let efforts_len = model
+                .get("thinking-efforts")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.len())
+                .unwrap_or(default_efforts);
+            if !thinking && efforts_len > 0 {
+                return Err(anyhow!(
+                    "models[{}] has thinking-efforts but supports.thinking is false",
+                    i
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// 读取 supports 中的 bool 字段。
+fn support_bool(value: &Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(|v| v.as_bool())
+}
+
+/// 校验 thinking effort 枚举且不重复。
+fn validate_thinking_efforts(value: Option<&Value>, label: &str) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let arr = value
+        .as_array()
+        .ok_or_else(|| anyhow!("{} must be an array", label))?;
+    let mut seen = BTreeSet::new();
+    for effort in arr {
+        let effort = effort
+            .as_str()
+            .ok_or_else(|| anyhow!("{} must contain strings only", label))?;
+        if !matches!(effort, "none" | "minimal" | "low" | "medium" | "high" | "xhigh") {
+            return Err(anyhow!("{} contains invalid effort: {}", label, effort));
+        }
+        if !seen.insert(effort) {
+            return Err(anyhow!("{} contains duplicate effort: {}", label, effort));
+        }
+    }
+    Ok(())
+}
+
+/// 校验可选正整数。
+fn validate_positive_u64(value: &Value, key: &str, label: &str) -> Result<()> {
+    if let Some(v) = value.get(key) {
+        let n = v
+            .as_u64()
+            .ok_or_else(|| anyhow!("{}.{} must be a positive integer", label, key))?;
+        if n == 0 {
+            return Err(anyhow!("{}.{} must be greater than 0", label, key));
+        }
+    }
     Ok(())
 }
 
@@ -754,6 +938,158 @@ fn run_build(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
+/// 执行 `update` 子命令：将旧 ABI v2 manifest 迁移到 Agreement v1。
+fn run_update(_args: UpdateArgs) -> Result<()> {
+    let manifest_path = Path::new("manifest.json");
+    let mut buf = String::new();
+    File::open(manifest_path)
+        .map_err(|e| anyhow!("cannot open manifest.json: {}", e))?
+        .read_to_string(&mut buf)?;
+
+    let mut value: Value = serde_json::from_str(&buf).map_err(|e| {
+        anyhow!(
+            "invalid manifest.json at line {}, column {}: {}",
+            e.line(),
+            e.column(),
+            e
+        )
+    })?;
+
+    let changed = migrate_manifest_to_v1(&mut value)?;
+    if changed {
+        fs::write(
+            manifest_path,
+            format!("{}\n", serde_json::to_string_pretty(&value)?),
+        )?;
+        info("manifest.json migrated to agreement-version = 1");
+    } else {
+        info("manifest.json is already agreement-version = 1");
+    }
+
+    validate_manifest()?;
+    Ok(())
+}
+
+/// 执行确定性的旧协议迁移。
+fn migrate_manifest_to_v1(value: &mut Value) -> Result<bool> {
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("manifest.json root must be an object"))?;
+    let meta = root
+        .get_mut("meta")
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| anyhow!("manifest.json must contain object field \"meta\""))?;
+
+    let mut changed = false;
+
+    if let Some(abi_version) = meta.remove("abi-version") {
+        if abi_version.as_u64() != Some(2) {
+            return Err(anyhow!(
+                "only abi-version = 2 can be migrated automatically, got {}",
+                abi_version
+            ));
+        }
+        changed = true;
+    }
+
+    if meta.get("agreement-version").and_then(|v| v.as_u64()) != Some(AGREEMENT_VERSION as u64) {
+        meta.insert(
+            "agreement-version".to_string(),
+            serde_json::json!(AGREEMENT_VERSION),
+        );
+        changed = true;
+    }
+
+    if let Some(kind) = meta.get_mut("kind").and_then(|v| v.as_str().map(str::to_string)) {
+        let next = match kind.as_str() {
+            "kind/llm" => Some("llm"),
+            "kind/image" => Some("image"),
+            "kind/tts" => Some("tts"),
+            _ => None,
+        };
+        if let Some(next) = next {
+            meta.insert("kind".to_string(), Value::String(next.to_string()));
+            changed = true;
+        }
+    }
+
+    changed |= migrate_models_to_objects(root)?;
+    changed |= migrate_default_supports(root)?;
+    changed |= migrate_max_tokens(root)?;
+
+    Ok(changed)
+}
+
+/// 将 `models: ["a"]` 迁移为 `models: [{"id": "a"}]`。
+fn migrate_models_to_objects(root: &mut serde_json::Map<String, Value>) -> Result<bool> {
+    let Some(models) = root.get_mut("models").and_then(|v| v.as_array_mut()) else {
+        return Ok(false);
+    };
+
+    let mut changed = false;
+    for model in models.iter_mut() {
+        if let Some(id) = model.as_str() {
+            *model = serde_json::json!({ "id": id });
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// 迁移旧的顶层 supports-* 字段。
+fn migrate_default_supports(root: &mut serde_json::Map<String, Value>) -> Result<bool> {
+    let mut changed = false;
+    let mappings = [
+        ("supports-thinking", "thinking"),
+        ("supports-tools", "tools"),
+        ("supports-stream", "stream"),
+    ];
+
+    let mut moved = Vec::new();
+    for (old_key, new_key) in mappings {
+        if let Some(value) = root.remove(old_key) {
+            moved.push((new_key, value));
+            changed = true;
+        }
+    }
+
+    if moved.is_empty() {
+        return Ok(changed);
+    }
+
+    let default_supports = root
+        .entry("default-supports".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let obj = default_supports
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("default-supports must be an object"))?;
+
+    for (key, value) in moved {
+        obj.insert(key.to_string(), value);
+    }
+
+    Ok(changed)
+}
+
+/// 将旧的顶层 max-tokens 迁移到每个模型的 max-output-tokens。
+fn migrate_max_tokens(root: &mut serde_json::Map<String, Value>) -> Result<bool> {
+    let Some(max_tokens) = root.remove("max-tokens") else {
+        return Ok(false);
+    };
+
+    if let Some(models) = root.get_mut("models").and_then(|v| v.as_array_mut()) {
+        for model in models.iter_mut() {
+            let Some(obj) = model.as_object_mut() else {
+                return Err(anyhow!("models must be migrated to objects before max-tokens"));
+            };
+            obj.entry("max-output-tokens".to_string())
+                .or_insert_with(|| max_tokens.clone());
+        }
+    }
+
+    Ok(true)
+}
+
 /// CLI 入口函数：解析参数并分发到对应子命令
 fn main() {
     let mut argv: Vec<String> = std::env::args().collect();
@@ -767,6 +1103,7 @@ fn main() {
     let res = match cli.command {
         Commands::Init(args) => run_init(args.parent_dir),
         Commands::Build(args) => run_build(args),
+        Commands::Update(args) => run_update(args),
     };
     if let Err(e) = res {
         error(&format!("{:#}", e));
@@ -783,20 +1120,30 @@ fn write_manifest(root: &Path, id: &str, kind: &str, author: &str, desc: &str) -
             "version": "0.1.0",
             "author": author,
             "description": desc,
-            "kind": format!("kind/{}", kind),
-            "abi-version": ABI_VERSION,
+            "agreement-version": AGREEMENT_VERSION,
+            "kind": kind,
             "url": "https://api.example.com/v1"
         },
-        "models": ["model-1"]
+        "models": [
+            {
+                "id": "model-1",
+                "name": "Model 1"
+            }
+        ]
     });
 
     // 按类型添加默认扩展字段
     match kind {
         "llm" => {
             manifest["default-model"] = serde_json::json!("model-1");
-            manifest["supports-thinking"] = serde_json::json!(false);
-            manifest["supports-tools"] = serde_json::json!(true);
-            manifest["supports-stream"] = serde_json::json!(true);
+            manifest["default-supports"] = serde_json::json!({
+                "thinking": false,
+                "tools": true,
+                "stream": true,
+                "vision-input": false,
+                "structured-output": false
+            });
+            manifest["default-thinking-efforts"] = serde_json::json!([]);
         }
         "tts" => {
             manifest["voices"] = serde_json::json!([

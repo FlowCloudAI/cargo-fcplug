@@ -9,7 +9,8 @@
 `cargo-fcplug` 是 **FlowCloudAI 插件开发 CLI 工具**，提供 `cargo fcplug` 子命令，用于：
 
 - `init` — 交互式创建新的 `.fcplug` 插件项目脚手架。
-- `build` — 校验 manifest、编译 WASM、优化、打包为 `.fcplug`。
+- `build` — 校验 Agreement v1 manifest、编译 WASM、优化、打包为 `.fcplug`。
+- `update` — 将旧 ABI v2 manifest 迁移为 Agreement v1。
 
 ---
 
@@ -27,7 +28,7 @@
 ```
 cargo-fcplug/
 ├── src/
-│   ├── main.rs            # CLI 入口（init / build 子命令）
+│   ├── main.rs            # CLI 入口（init / build / update 子命令）
 │   └── templates/
 │       ├── icon.png       # 默认插件图标
 │       ├── plugin.wit     # 默认 WIT 接口定义
@@ -54,6 +55,9 @@ cargo fcplug build --no-build
 
 # 跳过 wasm 优化
 cargo fcplug build --no-opt
+
+# 迁移旧 ABI v2 manifest 到 Agreement v1
+cargo fcplug update
 ```
 
 ---
@@ -62,11 +66,11 @@ cargo fcplug build --no-opt
 
 `.fcplug` 本质是一个 ZIP 文件，内部必须包含：
 
-- `manifest.json` — 元数据（`meta` 嵌套结构：id、kind、version、abi-version、url 等）
-- `plugin.wasm` — 编译好的 WASM 组件（target: `wasm32-wasip1`）
+- `manifest.json` — 元数据（`meta` 嵌套结构：id、kind、version、agreement-version、url 等）
+- `plugin.wasm` — 编译好的 WASM 组件（target: `wasm32-wasip2`）
 - `icon.png` — 可选图标
 
-当前 ABI 版本：`ABI_VERSION = 2`（定义在 `src/main.rs`）。
+当前协议版本：`AGREEMENT_VERSION = 1`（定义在 `src/main.rs`）。
 
 ### manifest.json 结构（实际使用）
 
@@ -78,8 +82,8 @@ cargo fcplug build --no-opt
     "version": "0.1.0",
     "author": "Author",
     "description": "Example plugin",
-    "kind": "kind/llm",
-    "abi-version": 2,
+    "agreement-version": 1,
+    "kind": "llm",
     "url": "https://api.example.com/v1/chat"
   },
   "models": [
@@ -89,9 +93,9 @@ cargo fcplug build --no-opt
 ```
 
 支持的 `kind`：
-- `kind/llm`
-- `kind/image`
-- `kind/tts`
+- `llm`
+- `image`
+- `tts`
 
 ---
 
@@ -122,7 +126,7 @@ world api {
 插件必须编译为：
 
 ```bash
-cargo build --target wasm32-wasip1 --release
+cargo build --target wasm32-wasip2 --release
 ```
 
 ---
@@ -138,7 +142,7 @@ cargo build --target wasm32-wasip1 --release
 
 ## 九、修改代码前的检查清单
 
-- [ ] 是否修改了 `ABI_VERSION`？如果是，请同步检查所有现有插件的 `abi-version` 兼容性。
+- [ ] 是否修改了 `AGREEMENT_VERSION`？如果是，请同步检查所有现有插件的 `agreement-version` 兼容性。
 - [ ] 是否修改了 WIT 接口？请同步更新 `src/templates/plugin.wit` 和所有现有插件的 `wit/plugin.wit`。
-- [ ] 是否修改了 manifest 校验逻辑？请确保与现有插件的 `manifest.json` 兼容。
-- [ ] 运行 `cargo build` 和 `cargo run -- init` / `cargo run -- build` 测试新功能。
+- [ ] 是否修改了 manifest 校验逻辑？请确保与 Agreement v1 文档一致。
+- [ ] 运行 `cargo build` 和 `cargo run -- init` / `cargo run -- build` / `cargo run -- update` 测试新功能。
