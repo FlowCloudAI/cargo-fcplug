@@ -12,6 +12,19 @@ cargo install --path .
 
 安装后，即可使用 `cargo fcplug` 命令。
 
+## 快速开始
+
+```bash
+# 创建插件脚手架
+cargo fcplug init
+
+# 进入新插件目录后构建 .fcplug 包
+cd <plugin-id>
+cargo fcplug build
+```
+
+构建产物会写入当前插件项目的 `dist/{plugin-id}.fcplug`。
+
 ---
 
 ## 用法
@@ -72,6 +85,8 @@ cargo fcplug update
 - `supports-*` → `default-supports`
 - `max-tokens` → 模型级 `max-output-tokens`
 
+`build` 和 `update` 都需要在插件项目根目录执行，因为它们读取当前目录下的 `manifest.json`、`Cargo.toml`、`icon.png` 和编译产物。
+
 ---
 
 ## 插件包格式
@@ -124,6 +139,26 @@ world api {
 - **CLI 框架**：[`clap`](https://docs.rs/clap)（derive features）
 - **包格式**：ZIP（[`zip`](https://docs.rs/zip) crate）
 - **WASM 优化**：[`wasm-tools`](https://github.com/bytecodealliance/wasm-tools) `strip`
+
+---
+
+## 目录结构
+
+```text
+tool_fcplug/
+├── src/
+│   ├── main.rs          # CLI、manifest 校验、构建和打包流程
+│   └── templates/       # init 子命令使用的默认模板
+├── Cargo.toml           # crate 配置
+├── AGENTS.md            # AI 编码助手维护指南
+└── README.md            # 当前文档
+```
+
+---
+
+## 贡献方式
+
+提交前请运行 `cargo build`。涉及插件包输出或 manifest 迁移时，用一个测试插件目录手动执行 `cargo fcplug build` 或 `cargo fcplug update` 验证。
 
 ---
 
