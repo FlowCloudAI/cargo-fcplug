@@ -58,6 +58,7 @@ tool_fcplug/
 - `AGREEMENT_VERSION = 1` 定义在 `src/main.rs`，修改会影响 App、核心库和插件包。
 - `build` 默认执行 `cargo build --target wasm32-wasip2 --release`，再尝试 `wasm-tools strip -a`。
 - `icon.png` 缺失时会自动生成默认图标；打包产物仍固定包含 `manifest.json`、`plugin.wasm`、`icon.png`。
+- manifest 校验边界在 `src/main.rs` 中集中实现：插件 ID 仅允许小写字母 / 数字 / 连字符，版本必须是三段式 semver，公网 URL 必须使用 HTTPS。
 
 ## CLI 子命令
 

@@ -89,6 +89,18 @@ cargo fcplug update
 
 ---
 
+## Manifest 校验
+
+`cargo fcplug build` 会在打包前校验 `manifest.json`，当前主要规则来自 `src/main.rs`：
+
+- 插件 ID 必须以英文小写字母开头，只能包含小写字母、数字和连字符，长度不超过 64，不能以连字符结尾或包含连续连字符。
+- 作者字段不能为空，长度不超过 128，并且只能使用可打印 ASCII 字符。
+- 描述长度不超过 100 个字符。
+- 版本号必须是三段式 semver，例如 `1.0.0`。
+- URL 允许 `https`；`http` 仅允许 `localhost` 或 loopback 地址。
+
+---
+
 ## 插件包格式
 
 `.fcplug` 本质是一个 ZIP 文件，内部包含：
