@@ -1298,7 +1298,7 @@ fn write_readme(root: &Path) -> Result<()> {
 
 /// 在插件项目目录下生成 `.gitignore`
 fn write_gitignore(root: &Path) -> Result<()> {
-    fs::write(root.join(".gitignore"), "/target\n/dist\n")?;
+    fs::write(root.join(".gitignore"), "/target\n/dist\n/Cargo.lock\n")?;
     Ok(())
 }
 
