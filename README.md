@@ -1,12 +1,12 @@
 # FlowCloudAI 插件 CLI（tool_fcplug）
 
 `tool_fcplug` 提供 FlowCloudAI 的 `.fcplug` 命令行工具链，用于初始化、构建与更新插件清单。  
-其目标是让插件项目从创建到构建验证形成统一、可复现的流程。
+目标是把插件开发从创建、构建到兼容性检查变成可复现流程。
 
 ## 项目简介
 
-仓库以 CLI 能力集中管理模板与打包步骤，配合 `plugins` 仓库中的示例插件进行端到端验证。  
-上手前先确认本机已具备相应 Rust/wasm 编译链。
+仓库聚焦 CLI 能力与模板管理，配合 `plugins` 示例仓库完成端到端兼容验证。  
+使用前请先确认本机已具备 Rust 与 wasm 工具链。
 
 ## 快速开始
 
@@ -22,19 +22,19 @@ cargo run -- update
 
 ### 最小示例
 
-1. 执行 `cargo run -- init` 生成模板。  
-2. 在 `plugins` 子仓库执行 `cargo fcplug build` 做完整产物生成。  
-3. 需要时执行 `cargo run -- update` 验证兼容性与 manifest。  
+1. 执行 `cargo run -- init` 生成新模板。  
+2. 切换到 `plugins` 仓库，执行 `cargo fcplug build`。  
+3. 需要时执行 `cargo run -- update` 进行兼容检查。  
 
 ## 主要功能 / 使用方式
 
 - 插件模板初始化。  
-- 插件构建与产物检查。  
-- `update` 命令用于兼容性与协议一致性校验。  
+- 插件构建与产物一致性检查。  
+- `update` 命令进行协议兼容与 manifest 校验。  
 
 ## 技术栈
 
-- Rust 2024、clap、WASM、`wit-bindgen`
+- Rust 2024、clap、WIT、WASM  
 
 ## 目录结构（仅顶层）
 
@@ -46,8 +46,8 @@ tool_fcplug/
 
 ## 许可证与贡献方式
 
-- 许可证：仓库未发现独立 `LICENSE` 文件（TODO：与发布仓库确认许可来源）。  
-- PR 建议补充 `cargo run -- init/build/update` 的执行结果与失败回放日志。  
-- 兼容性改动需写清 API 参数变更与迁移影响。  
+- 许可证：本仓库未发现独立 `LICENSE`，按仓库当前授权策略执行。  
+- PR 建议补充 `cargo run -- init/build/update` 结果与失败回放。  
+- 兼容性改动需说明参数变更与迁移影响。  
 
-文档同步时间：2026-06-04 17:03:10 +08:00
+文档同步时间：2026-06-05 12:44:21 +08:00
