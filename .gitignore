@@ -1,4 +1,5 @@
 /target
 /.gpm
+/.codegraph/
 /.idea
 Cargo.lock
