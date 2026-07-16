@@ -598,11 +598,9 @@ fn validate_ext(kind: &str, ext: &Value) -> Result<()> {
                 }
             }
         }
-        "image" => {
-            // supported-sizes 对 Image 推荐但非必需，仅警告
-            if ext.get("supported-sizes").is_none() {
-                warning("\"supported-sizes\" not specified for image plugin");
-            }
+        // supported-sizes 对 Image 推荐但非必需，仅警告
+        "image" if ext.get("supported-sizes").is_none() => {
+            warning("\"supported-sizes\" not specified for image plugin");
         }
         _ => {}
     }
@@ -648,10 +646,10 @@ fn validate_models(ext: &Value) -> Result<Vec<String>> {
 
 /// 校验默认模型引用。
 fn validate_default_model(ext: &Value, model_ids: &[String]) -> Result<()> {
-    if let Some(default_model) = ext.get("default-model").and_then(|v| v.as_str()) {
-        if !model_ids.iter().any(|id| id == default_model) {
-            return Err(anyhow!("\"default-model\" must match a model id"));
-        }
+    if let Some(default_model) = ext.get("default-model").and_then(|v| v.as_str())
+        && !model_ids.iter().any(|id| id == default_model)
+    {
+        return Err(anyhow!("\"default-model\" must match a model id"));
     }
     Ok(())
 }
