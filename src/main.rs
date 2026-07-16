@@ -316,12 +316,22 @@ fn build_wasm() -> Result<()> {
 /// 在 `target/wasm32-wasip2/release` 下查找编译生成的 `.wasm` 文件
 fn find_wasm() -> Result<PathBuf> {
     let cargo_toml: Value = toml::from_str(&fs::read_to_string("Cargo.toml")?)?;
-    let crate_name = cargo_toml["package"]["name"]
-        .as_str()
+    // 产物名优先取 [lib] name，缺失时回退到 package.name
+    let artifact_name = cargo_toml
+        .get("lib")
+        .and_then(|lib| lib.get("name"))
+        .and_then(|name| name.as_str())
+        .or_else(|| {
+            cargo_toml
+                .get("package")
+                .and_then(|pkg| pkg.get("name"))
+                .and_then(|name| name.as_str())
+        })
         .ok_or(anyhow!("missing package.name in Cargo.toml"))?
         .replace('-', "_");
 
-    let expected = Path::new("target/wasm32-wasip2/release").join(format!("{}.wasm", crate_name));
+    let expected =
+        Path::new("target/wasm32-wasip2/release").join(format!("{}.wasm", artifact_name));
 
     if expected.exists() {
         let size = fs::metadata(&expected)?.len();
