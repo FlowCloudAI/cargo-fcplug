@@ -84,10 +84,11 @@ fn validate_plugin_id(id: &str) -> Result<()> {
     if id.is_empty() {
         return Err(anyhow!("plugin id cannot be empty"));
     }
-    if id.len() > 64 {
+    let char_count = id.chars().count();
+    if char_count > 64 {
         return Err(anyhow!(
             "plugin id is too long ({} chars, max 64)",
-            id.len()
+            char_count
         ));
     }
     if !id.starts_with(|c: char| c.is_ascii_lowercase()) {
@@ -122,13 +123,14 @@ fn validate_author(author: &str) -> Result<()> {
     if author.is_empty() {
         return Err(anyhow!("author cannot be empty"));
     }
-    if author.len() > 128 {
+    let char_count = author.chars().count();
+    if char_count > 128 {
         return Err(anyhow!(
             "author is too long ({} chars, max 128)",
-            author.len()
+            char_count
         ));
     }
-    if !author.chars().all(|c| c >= ' ' && c <= '~') {
+    if !author.chars().all(|c| (' '..='~').contains(&c)) {
         return Err(anyhow!(
             "author must contain only printable ASCII characters"
         ));
@@ -138,10 +140,11 @@ fn validate_author(author: &str) -> Result<()> {
 
 /// 校验描述字段：长度不超过 100 字符。
 fn validate_description(description: &str) -> Result<()> {
-    if description.len() > 100 {
+    let char_count = description.chars().count();
+    if char_count > 100 {
         return Err(anyhow!(
             "description is too long ({} chars, max 100)",
-            description.len()
+            char_count
         ));
     }
     Ok(())
