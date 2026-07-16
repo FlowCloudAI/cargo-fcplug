@@ -1297,3 +1297,312 @@ fn write_gitignore(root: &Path) -> Result<()> {
     fs::write(root.join(".gitignore"), "/target\n/dist\n")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- validate_plugin_id ----
+    #[test]
+    fn plugin_id_accepts_valid() {
+        assert!(validate_plugin_id("my-awesome-plugin").is_ok());
+        assert!(validate_plugin_id("a").is_ok());
+        assert!(validate_plugin_id("plugin1").is_ok());
+        assert!(validate_plugin_id(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn plugin_id_rejects_bad_inputs() {
+        assert!(validate_plugin_id("").is_err(), "empty");
+        assert!(validate_plugin_id(&"a".repeat(65)).is_err(), "too long");
+        assert!(validate_plugin_id("1plugin").is_err(), "digit start");
+        assert!(validate_plugin_id("Plugin").is_err(), "uppercase start");
+        assert!(validate_plugin_id("my_plugin").is_err(), "underscore");
+        assert!(validate_plugin_id("myPlugin").is_err(), "uppercase mid");
+        assert!(validate_plugin_id("plugin-").is_err(), "trailing hyphen");
+        assert!(validate_plugin_id("my--plugin").is_err(), "double hyphen");
+    }
+
+    // ---- validate_author ----
+    #[test]
+    fn author_accepts_and_rejects() {
+        assert!(validate_author("yourname").is_ok());
+        assert!(validate_author("").is_err(), "empty");
+        assert!(validate_author(&"a".repeat(129)).is_err(), "too long");
+        assert!(validate_author(&"a".repeat(128)).is_ok(), "at limit");
+        assert!(validate_author("名字").is_err(), "non-ascii");
+    }
+
+    // ---- validate_description ----
+    #[test]
+    fn description_accepts_empty_and_ascii() {
+        assert!(validate_description("").is_ok());
+        assert!(validate_description("A concise description").is_ok());
+    }
+
+    // 回归：描述限制按字符计而非字节计。40 个中文字（约 120 字节）应通过。
+    #[test]
+    fn description_counts_chars_not_bytes() {
+        let cn = "字".repeat(40);
+        assert!(cn.len() > 100, "precondition: byte length exceeds 100");
+        assert!(
+            validate_description(&cn).is_ok(),
+            "40 chinese chars must pass a 100-char limit"
+        );
+
+        let too_long = "字".repeat(101);
+        assert!(validate_description(&too_long).is_err(), "101 chars must fail");
+        assert!(validate_description(&"字".repeat(100)).is_ok(), "100 chars at limit");
+    }
+
+    // ---- validate_version ----
+    #[test]
+    fn version_semver_rules() {
+        assert!(validate_version("1.0.0").is_ok());
+        assert!(validate_version("0.1.0").is_ok());
+        assert!(validate_version("1.0").is_err(), "two segments");
+        assert!(validate_version("1.0.0.0").is_err(), "four segments");
+        assert!(validate_version("1.x.0").is_err(), "non-numeric");
+        assert!(validate_version("v1.0.0").is_err(), "prefixed");
+    }
+
+    // ---- validate_url ----
+    #[test]
+    fn url_scheme_policy() {
+        assert!(validate_url("https://api.example.com/v1").is_ok());
+        assert!(validate_url("http://localhost:8080").is_ok(), "localhost http");
+        assert!(validate_url("http://127.0.0.1:8080").is_ok(), "loopback v4");
+        assert!(validate_url("http://[::1]/x").is_ok(), "loopback v6");
+        assert!(validate_url("http://api.example.com").is_err(), "public http");
+        assert!(validate_url("ftp://example.com").is_err(), "bad scheme");
+        assert!(validate_url("not a url").is_err(), "unparseable");
+    }
+
+    // ---- validate_positive_u64 ----
+    #[test]
+    fn positive_u64_rules() {
+        let obj = json!({ "a": 10, "zero": 0, "neg": -1, "str": "x" });
+        assert!(validate_positive_u64(&obj, "a", "m").is_ok());
+        assert!(validate_positive_u64(&obj, "missing", "m").is_ok(), "absent is ok");
+        assert!(validate_positive_u64(&obj, "zero", "m").is_err(), "zero rejected");
+        assert!(validate_positive_u64(&obj, "neg", "m").is_err(), "negative rejected");
+        assert!(validate_positive_u64(&obj, "str", "m").is_err(), "non-int rejected");
+    }
+
+    // ---- validate_thinking_efforts ----
+    #[test]
+    fn thinking_efforts_rules() {
+        assert!(validate_thinking_efforts(None, "l").is_ok(), "absent ok");
+        let ok = json!(["none", "low", "high"]);
+        assert!(validate_thinking_efforts(Some(&ok), "l").is_ok());
+        let bad = json!(["low", "turbo"]);
+        assert!(validate_thinking_efforts(Some(&bad), "l").is_err(), "invalid value");
+        let dup = json!(["low", "low"]);
+        assert!(validate_thinking_efforts(Some(&dup), "l").is_err(), "duplicate");
+        let not_arr = json!("low");
+        assert!(validate_thinking_efforts(Some(&not_arr), "l").is_err(), "not array");
+        let not_str = json!([1, 2]);
+        assert!(validate_thinking_efforts(Some(&not_str), "l").is_err(), "non-string");
+    }
+
+    // ---- validate_models ----
+    #[test]
+    fn models_valid_returns_ids() {
+        let ext = json!({ "models": [{ "id": "a" }, { "id": "b" }] });
+        let ids = validate_models(&ext).unwrap();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn models_rejects_bad_inputs() {
+        assert!(validate_models(&json!({})).is_err(), "missing models");
+        assert!(validate_models(&json!({ "models": [] })).is_err(), "empty");
+        assert!(
+            validate_models(&json!({ "models": [{ "id": "" }] })).is_err(),
+            "empty id"
+        );
+        assert!(
+            validate_models(&json!({ "models": [{ "id": "a" }, { "id": "a" }] })).is_err(),
+            "duplicate id"
+        );
+        assert!(
+            validate_models(&json!({ "models": [{ "id": "a", "max-output-tokens": 0 }] })).is_err(),
+            "zero token field"
+        );
+    }
+
+    // ---- validate_default_model ----
+    #[test]
+    fn default_model_must_match() {
+        let ids = vec!["a".to_string(), "b".to_string()];
+        assert!(validate_default_model(&json!({ "default-model": "a" }), &ids).is_ok());
+        assert!(validate_default_model(&json!({}), &ids).is_ok(), "absent ok");
+        assert!(
+            validate_default_model(&json!({ "default-model": "zzz" }), &ids).is_err(),
+            "unknown ref"
+        );
+    }
+
+    // ---- validate_llm_ext ----
+    #[test]
+    fn llm_ext_thinking_efforts_consistency() {
+        // supports.thinking=false 却给了 thinking-efforts → 报错
+        let bad = json!({
+            "models": [{ "id": "a", "supports": { "thinking": false }, "thinking-efforts": ["low"] }]
+        });
+        assert!(validate_llm_ext(&bad).is_err());
+
+        // thinking=true 时允许 thinking-efforts
+        let ok = json!({
+            "models": [{ "id": "a", "supports": { "thinking": true }, "thinking-efforts": ["low"] }]
+        });
+        assert!(validate_llm_ext(&ok).is_ok());
+
+        // 无 thinking-efforts 时不受约束
+        let plain = json!({ "models": [{ "id": "a" }] });
+        assert!(validate_llm_ext(&plain).is_ok());
+    }
+
+    // ---- human_size ----
+    #[test]
+    fn human_size_boundaries() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+        assert_eq!(human_size(1024 * 1024), "1.00 MB");
+        assert_eq!(human_size(1024 * 1024 * 1024), "1.00 GB");
+    }
+
+    // ---- migrate_models_to_objects ----
+    #[test]
+    fn migrate_models_strings_to_objects() {
+        let mut root = json!({ "models": ["a", "b"] })
+            .as_object()
+            .unwrap()
+            .clone();
+        let changed = migrate_models_to_objects(&mut root).unwrap();
+        assert!(changed);
+        assert_eq!(root["models"], json!([{ "id": "a" }, { "id": "b" }]));
+
+        // 已是对象则不改动
+        let mut obj_root = json!({ "models": [{ "id": "a" }] })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(!migrate_models_to_objects(&mut obj_root).unwrap());
+
+        // 无 models 字段
+        let mut empty = serde_json::Map::new();
+        assert!(!migrate_models_to_objects(&mut empty).unwrap());
+    }
+
+    // ---- migrate_default_supports ----
+    #[test]
+    fn migrate_top_level_supports_into_object() {
+        let mut root = json!({
+            "supports-thinking": true,
+            "supports-tools": false,
+            "supports-stream": true
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let changed = migrate_default_supports(&mut root).unwrap();
+        assert!(changed);
+        assert!(!root.contains_key("supports-thinking"));
+        assert_eq!(
+            root["default-supports"],
+            json!({ "thinking": true, "tools": false, "stream": true })
+        );
+
+        // 无旧字段则不改动
+        let mut none = serde_json::Map::new();
+        assert!(!migrate_default_supports(&mut none).unwrap());
+    }
+
+    // ---- migrate_max_tokens ----
+    #[test]
+    fn migrate_max_tokens_into_models() {
+        let mut root = json!({
+            "max-tokens": 4096,
+            "models": [{ "id": "a" }, { "id": "b", "max-output-tokens": 2048 }]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let changed = migrate_max_tokens(&mut root).unwrap();
+        assert!(changed);
+        assert!(!root.contains_key("max-tokens"));
+        // 缺失的补上，已有的不覆盖
+        assert_eq!(root["models"][0]["max-output-tokens"], json!(4096));
+        assert_eq!(root["models"][1]["max-output-tokens"], json!(2048));
+    }
+
+    #[test]
+    fn migrate_max_tokens_no_field_is_noop() {
+        let mut root = json!({ "models": [{ "id": "a" }] })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(!migrate_max_tokens(&mut root).unwrap());
+    }
+
+    // 回归（第 4 条）：有 max-tokens 但无 models → 报错而非静默丢弃。
+    #[test]
+    fn migrate_max_tokens_without_models_errors() {
+        let mut no_models = json!({ "max-tokens": 4096 })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(migrate_max_tokens(&mut no_models).is_err());
+        // 报错时不得移除该字段
+        assert!(no_models.contains_key("max-tokens"), "must not drop max-tokens on error");
+
+        let mut empty_models = json!({ "max-tokens": 4096, "models": [] })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(migrate_max_tokens(&mut empty_models).is_err(), "empty models also errors");
+    }
+
+    // ---- migrate_manifest_to_v1 (端到端) ----
+    #[test]
+    fn migrate_full_abi_v2_manifest() {
+        let mut value = json!({
+            "meta": {
+                "id": "p", "name": "P", "author": "x", "description": "d",
+                "version": "1.0.0", "abi-version": 2, "kind": "kind/llm",
+                "url": "https://api.example.com"
+            },
+            "models": ["m1"],
+            "max-tokens": 8192,
+            "supports-thinking": false,
+            "supports-tools": true,
+            "supports-stream": true
+        });
+
+        let changed = migrate_manifest_to_v1(&mut value).unwrap();
+        assert!(changed);
+
+        let meta = &value["meta"];
+        assert!(meta.get("abi-version").is_none(), "abi-version removed");
+        assert_eq!(meta["agreement-version"], json!(AGREEMENT_VERSION));
+        assert_eq!(meta["kind"], json!("llm"), "kind/llm normalized");
+        assert_eq!(value["models"], json!([{ "id": "m1", "max-output-tokens": 8192 }]));
+        assert_eq!(
+            value["default-supports"],
+            json!({ "thinking": false, "tools": true, "stream": true })
+        );
+        assert!(value.get("max-tokens").is_none());
+
+        // 幂等：再次迁移应无改动
+        assert!(!migrate_manifest_to_v1(&mut value).unwrap());
+    }
+
+    #[test]
+    fn migrate_rejects_non_v2_abi() {
+        let mut value = json!({ "meta": { "abi-version": 3 } });
+        assert!(migrate_manifest_to_v1(&mut value).is_err());
+    }
+}
