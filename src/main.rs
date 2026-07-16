@@ -387,10 +387,12 @@ fn optimize_wasm(wasm: &Path) -> Result<()> {
             }
 
             if let Err(e) = fs::rename(&tmp_path, wasm) {
-                fs::copy(&tmp_path, wasm).map_err(|ce| {
+                let copy_result = fs::copy(&tmp_path, wasm);
+                // 无论 copy 成功与否都清理临时文件，再传播错误。
+                let _ = fs::remove_file(&tmp_path);
+                copy_result.map_err(|ce| {
                     anyhow!("failed to replace wasm (rename: {}, copy: {})", e, ce)
                 })?;
-                let _ = fs::remove_file(&tmp_path);
             }
 
             let size_after = fs::metadata(wasm)?.len();
