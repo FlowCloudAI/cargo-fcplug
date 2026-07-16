@@ -292,6 +292,21 @@ fn ask(prompt: &str, default: &str) -> Result<String> {
     }
 }
 
+/// 交互式询问并校验用户输入，校验失败则打印错误并重新询问，直到通过。
+fn ask_valid(
+    prompt: &str,
+    default: &str,
+    validate: impl Fn(&str) -> Result<()>,
+) -> Result<String> {
+    loop {
+        let value = ask(prompt, default)?;
+        match validate(&value) {
+            Ok(()) => return Ok(value),
+            Err(e) => error(&format!("{:#}", e)),
+        }
+    }
+}
+
 /// 调用 `cargo build` 编译插件为 WASM（target: wasm32-wasip2, release）
 fn build_wasm() -> Result<()> {
     let start = Instant::now();
@@ -824,24 +839,22 @@ fn read_png_size(path: &Path) -> Result<(u32, u32)> {
 fn run_init(parent_dir: Option<String>) -> Result<()> {
     println!("== Create new FlowCloudAI plugin ==\n");
 
-    let id = ask("Plugin id", "my-plugin")?;
-    validate_plugin_id(&id)?;
+    let id = ask_valid("Plugin id", "my-plugin", validate_plugin_id)?;
 
-    let mut kind: String;
-    loop {
-        kind = ask("Plugin kind (llm|image|tts)", "llm")?;
-        if kind != "llm" && kind != "image" && kind != "tts" {
-            error("Invalid plugin kind, choose one of: llm, image, tts");
+    let kind = ask_valid("Plugin kind (llm|image|tts)", "llm", |v| {
+        if KINDS.contains(&v) {
+            Ok(())
         } else {
-            break;
+            Err(anyhow!(
+                "Invalid plugin kind, choose one of: {}",
+                KINDS.join(", ")
+            ))
         }
-    }
+    })?;
 
-    let author = ask("Author", "unknown")?;
-    validate_author(&author)?;
+    let author = ask_valid("Author", "unknown", validate_author)?;
 
-    let description = ask("Description", "example plugin")?;
-    validate_description(&description)?;
+    let description = ask_valid("Description", "example plugin", validate_description)?;
 
     let base = parent_dir.unwrap_or_else(|| ".".into());
     let root = Path::new(&base).join(format!("fcplug-{}", id));
