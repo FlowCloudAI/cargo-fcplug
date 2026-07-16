@@ -5,11 +5,10 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Read;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
-use url::Url;
+use url::{Host, Url};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
@@ -177,20 +176,16 @@ fn validate_url(raw: &str) -> Result<()> {
     match parsed.scheme() {
         "https" => Ok(()),
         "http" => {
-            let host = parsed
-                .host_str()
-                .ok_or_else(|| anyhow!("HTTP URL must contain a host"))?;
-            if host.eq_ignore_ascii_case("localhost") {
-                return Ok(());
+            // 用 url 自带的 Host 枚举判断，IPv6 会正确去掉字面量方括号。
+            match parsed.host() {
+                Some(Host::Domain(domain)) if domain.eq_ignore_ascii_case("localhost") => Ok(()),
+                Some(Host::Ipv4(ip)) if ip.is_loopback() => Ok(()),
+                Some(Host::Ipv6(ip)) if ip.is_loopback() => Ok(()),
+                Some(_) => Err(anyhow!(
+                    "HTTP is only allowed for localhost/loopback endpoints; use HTTPS for public endpoints"
+                )),
+                None => Err(anyhow!("HTTP URL must contain a host")),
             }
-            if let Ok(ip) = host.parse::<IpAddr>() {
-                if ip.is_loopback() {
-                    return Ok(());
-                }
-            }
-            Err(anyhow!(
-                "HTTP is only allowed for localhost/loopback endpoints; use HTTPS for public endpoints"
-            ))
         }
         s => Err(anyhow!("URL scheme must be http or https, got \"{}\"", s)),
     }
