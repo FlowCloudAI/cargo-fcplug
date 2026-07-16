@@ -195,6 +195,8 @@ fn validate_url(raw: &str) -> Result<()> {
 
 /// 当前插件协议版本号
 const AGREEMENT_VERSION: u32 = 1;
+/// 合法的插件类型
+const KINDS: [&str; 3] = ["llm", "image", "tts"];
 /// 默认插件图标（PNG）
 static DEFAULT_ICON: &[u8] = include_bytes!("../src/templates/icon.png");
 /// 默认 README 模板
@@ -495,7 +497,7 @@ fn validate_manifest() -> Result<Manifest> {
         )
     })?;
 
-    let valid_kinds = ["llm", "image", "tts"];
+    let valid_kinds = KINDS;
     if !valid_kinds.contains(&meta.kind.as_str()) {
         return Err(anyhow!(
             "meta.kind is \"{}\", must be one of: {}\n       Example: \"kind\": \"llm\"",
