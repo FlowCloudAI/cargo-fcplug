@@ -1083,18 +1083,34 @@ fn migrate_default_supports(root: &mut serde_json::Map<String, Value>) -> Result
 
 /// 将旧的顶层 max-tokens 迁移到每个模型的 max-output-tokens。
 fn migrate_max_tokens(root: &mut serde_json::Map<String, Value>) -> Result<bool> {
-    let Some(max_tokens) = root.remove("max-tokens") else {
+    if !root.contains_key("max-tokens") {
         return Ok(false);
-    };
+    }
 
-    if let Some(models) = root.get_mut("models").and_then(|v| v.as_array_mut()) {
-        for model in models.iter_mut() {
-            let Some(obj) = model.as_object_mut() else {
-                return Err(anyhow!("models must be migrated to objects before max-tokens"));
-            };
-            obj.entry("max-output-tokens".to_string())
-                .or_insert_with(|| max_tokens.clone());
-        }
+    // 必须有 models 承接 max-tokens，否则移除即静默丢数据，宁可报错。
+    let has_models = root
+        .get("models")
+        .and_then(|v| v.as_array())
+        .map(|arr| !arr.is_empty())
+        .unwrap_or(false);
+    if !has_models {
+        return Err(anyhow!(
+            "cannot migrate top-level max-tokens: no models array to move it into"
+        ));
+    }
+
+    let max_tokens = root.remove("max-tokens").expect("checked above");
+
+    let models = root
+        .get_mut("models")
+        .and_then(|v| v.as_array_mut())
+        .expect("checked above");
+    for model in models.iter_mut() {
+        let Some(obj) = model.as_object_mut() else {
+            return Err(anyhow!("models must be migrated to objects before max-tokens"));
+        };
+        obj.entry("max-output-tokens".to_string())
+            .or_insert_with(|| max_tokens.clone());
     }
 
     Ok(true)
