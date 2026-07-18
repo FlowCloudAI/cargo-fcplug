@@ -12,6 +12,8 @@ use url::{Host, Url};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
+mod publish;
+
 /// 终端颜色重置码
 const COLOR_RESET: &str = "\x1b[0m";
 /// 绿色（用于 [INFO]）
@@ -221,6 +223,7 @@ enum Commands {
     Build(BuildArgs),
     Init(InitArgs),
     Update(UpdateArgs),
+    Publish(publish::PublishArgs),
 }
 
 /// `build` 子命令参数
@@ -1143,6 +1146,7 @@ fn main() {
         Commands::Init(args) => run_init(args.parent_dir),
         Commands::Build(args) => run_build(args),
         Commands::Update(args) => run_update(args),
+        Commands::Publish(args) => publish::run_publish(args),
     };
     if let Err(e) = res {
         error(&format!("{:#}", e));
