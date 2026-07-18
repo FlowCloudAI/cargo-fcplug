@@ -384,13 +384,29 @@ fn confirm_publish() -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
+fn normalize_server_url(raw: &str) -> Result<String> {
+    let url = url::Url::parse(raw.trim()).map_err(|_| {
+        anyhow!("服务器地址必须使用 HTTPS；仅精确 localhost 或回环 IP 可使用 HTTP")
+    })?;
+    let loopback = match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return Err(anyhow!(
+            "服务器地址必须使用 HTTPS；仅精确 localhost 或回环 IP 可使用 HTTP"
+        ));
+    }
+
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
 /// 执行 `publish` 子命令。
 pub fn run_publish(args: PublishArgs) -> Result<()> {
-    let server = args.server.trim_end_matches('/').to_string();
-    if !server.starts_with("https://") && !server.contains("localhost") && !server.contains("127.0.0.1")
-    {
-        warning("服务器地址不是 HTTPS，凭据将明文传输");
-    }
+    let server = normalize_server_url(&args.server)?;
 
     step(1, 5, "解析插件");
     let path = match args.file {
@@ -568,5 +584,34 @@ mod tests {
             "https://bucket.cos.ap-guangzhou.myqcloud.com/staging/plugin-uploads/u1.fcplug"
         );
         assert!(!shown.contains("q-signature"));
+    }
+
+    #[test]
+    fn server_url_allows_https_and_exact_loopback_hosts() {
+        assert_eq!(
+            normalize_server_url("https://plugins.example.com/").unwrap(),
+            "https://plugins.example.com"
+        );
+        for server in [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(normalize_server_url(server).is_ok(), "应允许：{server}");
+        }
+    }
+
+    #[test]
+    fn server_url_rejects_insecure_non_loopback_hosts() {
+        for server in [
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil.example",
+            "http://192.168.1.10:3000",
+            "ftp://plugins.example.com",
+            "not-a-url",
+        ] {
+            let err = normalize_server_url(server).expect_err("不安全地址应该被拒绝");
+            assert!(err.to_string().contains("HTTPS"), "{server}：{err}");
+        }
     }
 }
