@@ -37,6 +37,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// 服务端 .fcplug 大小上限，本地提前拦截（服务端仍会校验）
 const MAX_FCPLUG_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+const MAX_ICON_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_WASM_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ZIP_ENTRIES: usize = 64;
 
 // ─── 服务端响应结构 ──────────────────────────────────────────────────────────
 
@@ -75,6 +79,47 @@ struct LocalPackage {
     md5_base64: String,
 }
 
+fn declared_zip_entry_count(bytes: &[u8]) -> Result<usize> {
+    const EOCD_SIGNATURE: &[u8] = b"PK\x05\x06";
+    const EOCD_MIN_LEN: usize = 22;
+    const MAX_COMMENT_LEN: usize = u16::MAX as usize;
+
+    if bytes.len() < EOCD_MIN_LEN {
+        return Err(anyhow!("ZIP 目录结构不合法"));
+    }
+    let search_start = bytes.len().saturating_sub(EOCD_MIN_LEN + MAX_COMMENT_LEN);
+    let Some(offset) = (search_start..=bytes.len() - EOCD_MIN_LEN)
+        .rev()
+        .find(|offset| {
+            bytes[*offset..].starts_with(EOCD_SIGNATURE)
+                && *offset
+                    + EOCD_MIN_LEN
+                    + u16::from_le_bytes([bytes[*offset + 20], bytes[*offset + 21]]) as usize
+                    == bytes.len()
+        })
+    else {
+        return Err(anyhow!("ZIP 目录结构不合法"));
+    };
+    Ok(u16::from_le_bytes([bytes[offset + 10], bytes[offset + 11]]) as usize)
+}
+
+fn read_bounded(reader: impl Read, label: &str, limit: u64) -> Result<Vec<u8>> {
+    let mut data = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut data)?;
+    if data.len() as u64 > limit {
+        return Err(anyhow!("{label} 解压后超出上限 {limit} 字节"));
+    }
+    Ok(data)
+}
+
+fn validate_uncompressed_size(reader: impl Read, label: &str, limit: u64) -> Result<()> {
+    let size = std::io::copy(&mut reader.take(limit + 1), &mut std::io::sink())?;
+    if size > limit {
+        return Err(anyhow!("{label} 解压后超出上限 {limit} 字节"));
+    }
+    Ok(())
+}
+
 /// 未指定 --file 时：读当前目录 manifest.json 的 id，定位 dist/{id}.fcplug。
 fn default_package_path(project_dir: &Path) -> Result<PathBuf> {
     let manifest_path = project_dir.join("manifest.json");
@@ -110,17 +155,44 @@ fn parse_package(path: &Path) -> Result<LocalPackage> {
         ));
     }
 
+    let declared_entries = declared_zip_entry_count(&bytes)?;
+    if declared_entries > MAX_ZIP_ENTRIES {
+        return Err(anyhow!(
+            "ZIP 条目数 {declared_entries} 超出上限 {MAX_ZIP_ENTRIES}"
+        ));
+    }
+
     let cursor = std::io::Cursor::new(&bytes);
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|_| anyhow!("{} 不是有效的 ZIP/.fcplug 文件", path.display()))?;
-    let mut manifest_data = Vec::new();
-    archive
-        .by_name("manifest.json")
-        .map_err(|_| anyhow!("插件包缺少 manifest.json"))?
-        .read_to_end(&mut manifest_data)?;
-    archive
-        .by_name("plugin.wasm")
-        .map_err(|_| anyhow!("插件包缺少 plugin.wasm"))?;
+    if archive.len() != declared_entries {
+        return Err(anyhow!("ZIP 包含重复条目"));
+    }
+
+    let mut manifest_data = None;
+    let mut has_wasm = false;
+    for index in 0..archive.len() {
+        let file = archive.by_index(index)?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name().to_string();
+        match name.as_str() {
+            "manifest.json" => {
+                manifest_data = Some(read_bounded(file, &name, MAX_MANIFEST_BYTES)?);
+            }
+            "plugin.wasm" => {
+                validate_uncompressed_size(file, &name, MAX_WASM_BYTES)?;
+                has_wasm = true;
+            }
+            "icon.png" => validate_uncompressed_size(file, &name, MAX_ICON_BYTES)?,
+            _ => {}
+        }
+    }
+    let manifest_data = manifest_data.ok_or_else(|| anyhow!("插件包缺少 manifest.json"))?;
+    if !has_wasm {
+        return Err(anyhow!("插件包缺少 plugin.wasm"));
+    }
 
     let manifest: Manifest = serde_json::from_slice(&manifest_data)
         .map_err(|e| anyhow!("manifest.json 解析失败：{e}"))?;
@@ -495,6 +567,16 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
+    fn replace_all_same_len(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+        assert_eq!(from.len(), to.len());
+        let offsets = (0..=bytes.len() - from.len())
+            .filter(|offset| bytes[*offset..].starts_with(from))
+            .collect::<Vec<_>>();
+        for offset in offsets {
+            bytes[offset..offset + to.len()].copy_from_slice(to);
+        }
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "fcplug-publish-test-{tag}-{}",
@@ -541,6 +623,94 @@ mod tests {
         std::fs::write(&not_zip, b"hello").unwrap();
         let err = parse_err(&not_zip);
         assert!(err.contains("ZIP"), "实际：{err}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_package_rejects_oversized_manifest() {
+        let dir = temp_dir("manifest-limit");
+        let path = dir.join("oversized-manifest.fcplug");
+        let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("manifest.json", options).unwrap();
+        writer.write_all(&vec![b' '; 300 * 1024]).unwrap();
+        writer.start_file("plugin.wasm", options).unwrap();
+        writer.write_all(b"wasm").unwrap();
+        std::fs::write(&path, writer.finish().unwrap().into_inner()).unwrap();
+
+        let err = parse_err(&path);
+        assert!(err.contains("manifest.json 解压后超出上限"), "实际：{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_package_rejects_oversized_wasm_and_icon() {
+        let dir = temp_dir("entry-limits");
+        for (filename, entry_name, size) in [
+            ("oversized-wasm.fcplug", "plugin.wasm", 33 * 1024 * 1024),
+            ("oversized-icon.fcplug", "icon.png", 2 * 1024 * 1024 + 1),
+        ] {
+            let path = dir.join(filename);
+            let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let options = SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            writer.start_file("manifest.json", options).unwrap();
+            writer.write_all(manifest_json("demo").as_bytes()).unwrap();
+            if entry_name != "plugin.wasm" {
+                writer.start_file("plugin.wasm", options).unwrap();
+                writer.write_all(b"wasm").unwrap();
+            }
+            writer.start_file(entry_name, options).unwrap();
+            let chunk = vec![0u8; 1024 * 1024];
+            let full_chunks = size / chunk.len();
+            for _ in 0..full_chunks {
+                writer.write_all(&chunk).unwrap();
+            }
+            writer.write_all(&chunk[..size % chunk.len()]).unwrap();
+            std::fs::write(&path, writer.finish().unwrap().into_inner()).unwrap();
+
+            let err = parse_err(&path);
+            assert!(err.contains("解压后超出上限"), "{entry_name}：{err}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_package_rejects_too_many_or_duplicate_entries() {
+        let dir = temp_dir("entry-count");
+        let too_many = dir.join("too-many.fcplug");
+        let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default();
+        writer.start_file("manifest.json", options).unwrap();
+        writer.write_all(manifest_json("demo").as_bytes()).unwrap();
+        writer.start_file("plugin.wasm", options).unwrap();
+        writer.write_all(b"wasm").unwrap();
+        for index in 0..63 {
+            writer
+                .start_file(format!("junk-{index}.txt"), options)
+                .unwrap();
+            writer.write_all(b"x").unwrap();
+        }
+        std::fs::write(&too_many, writer.finish().unwrap().into_inner()).unwrap();
+        let err = parse_err(&too_many);
+        assert!(err.contains("条目数"), "实际：{err}");
+
+        let duplicate = dir.join("duplicate.fcplug");
+        let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for name in ["xanifest.json", "yanifest.json"] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(manifest_json("demo").as_bytes()).unwrap();
+        }
+        writer.start_file("plugin.wasm", options).unwrap();
+        writer.write_all(b"wasm").unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
+        replace_all_same_len(&mut bytes, b"xanifest.json", b"manifest.json");
+        replace_all_same_len(&mut bytes, b"yanifest.json", b"manifest.json");
+        std::fs::write(&duplicate, bytes).unwrap();
+        let err = parse_err(&duplicate);
+        assert!(err.contains("重复条目"), "实际：{err}");
 
         let _ = std::fs::remove_dir_all(dir);
     }
