@@ -3,3 +3,4 @@
 /.codegraph/
 /.idea
 Cargo.lock
+.DS_Store
