@@ -44,7 +44,7 @@ tool_fcplug/
 
 ## 许可证与贡献方式
 
-- 许可证：本仓库未发现独立 `LICENSE`，按仓库当前授权策略执行。  
+- 许可证：`tool_fcplug/LICENSE`。
 - PR 建议补充 `cargo run -- init/build/update` 结果与失败回放。  
 - 兼容性改动需说明参数变化与迁移影响。  
 
